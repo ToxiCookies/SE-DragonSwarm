@@ -138,36 +138,37 @@ void ParseIni()
 {
     if (!_ini.TryParse(Me.CustomData)) _ini.Clear();
 
-    _role = _ini.Get("Role","Mode").ToString("Host") == "Satellite" ? Role.Satellite : Role.Host;
+    string roleStr = _ini.Get("Role","Mode").ToString(_role == Role.Satellite ? "Satellite" : "Host");
+    _role = roleStr == "Satellite" ? Role.Satellite : Role.Host;
 
-    _formationGroup = _ini.Get("IDs","FormationGroup").ToString("SwarmAlpha");
+    _formationGroup = _ini.Get("IDs","FormationGroup").ToString(_formationGroup);
     string idxStr = _ini.Get("IDs","Index").ToString("auto");
 
-    _shellCount     = Math.Max(1, _ini.Get("Formation","ShellCount").ToInt32(3));
-    _pointsPerShell = Math.Max(1, _ini.Get("Formation","PointsPerShell").ToInt32(16));
-    _shellSpacing   = Math.Max(1.0, _ini.Get("Formation","ShellSpacing").ToDouble(50));
-    _baseRadius     = Math.Max(1.0, _ini.Get("Formation","BaseRadius").ToDouble(75));
+    _shellCount     = Math.Max(1, _ini.Get("Formation","ShellCount").ToInt32(_shellCount));
+    _pointsPerShell = Math.Max(1, _ini.Get("Formation","PointsPerShell").ToInt32(_pointsPerShell));
+    _shellSpacing   = Math.Max(1.0, _ini.Get("Formation","ShellSpacing").ToDouble(_shellSpacing));
+    _baseRadius     = Math.Max(1.0, _ini.Get("Formation","BaseRadius").ToDouble(_baseRadius));
 
-    _maxSpeed = Math.Max(1.0, _ini.Get("Control","MaxSpeed").ToDouble(50));
-    _kp       = _ini.Get("Control","PositionKp").ToDouble(0.6);
-    _ki       = _ini.Get("Control","PositionKi").ToDouble(0);
-    _kd       = _ini.Get("Control","PositionKd").ToDouble(1.4);
-    _gyroKp   = _ini.Get("Control","GyroKp").ToDouble(3.0);
-    _arrival  = Math.Max(0.1, _ini.Get("Control","ArrivalTolerance").ToDouble(3.0));
+    _maxSpeed = Math.Max(1.0, _ini.Get("Control","MaxSpeed").ToDouble(_maxSpeed));
+    _kp       = _ini.Get("Control","PositionKp").ToDouble(_kp);
+    _ki       = _ini.Get("Control","PositionKi").ToDouble(_ki);
+    _kd       = _ini.Get("Control","PositionKd").ToDouble(_kd);
+    _gyroKp   = _ini.Get("Control","GyroKp").ToDouble(_gyroKp);
+    _arrival  = Math.Max(0.1, _ini.Get("Control","ArrivalTolerance").ToDouble(_arrival));
 
-    _minSep     = Math.Max(0.1, _ini.Get("Avoidance","MinSeparation").ToDouble(18));
-    _sepGain    = _ini.Get("Avoidance","SeparationGain").ToDouble(1.1);
-    _hostBuffer = _ini.Get("Avoidance","HostBuffer").ToDouble(22);
-    _useSensors = _ini.Get("Avoidance","UseSensors").ToBoolean(true);
+    _minSep     = Math.Max(0.1, _ini.Get("Avoidance","MinSeparation").ToDouble(_minSep));
+    _sepGain    = _ini.Get("Avoidance","SeparationGain").ToDouble(_sepGain);
+    _hostBuffer = _ini.Get("Avoidance","HostBuffer").ToDouble(_hostBuffer);
+    _useSensors = _ini.Get("Avoidance","UseSensors").ToBoolean(_useSensors);
 
-    _controllerName = _ini.Get("Blocks","MainControllerName").ToString("");
-    _refForward     = _ini.Get("Blocks","ReferenceForward").ToString("");
-    _refUp          = _ini.Get("Blocks","ReferenceUp").ToString("");
+    _controllerName = _ini.Get("Blocks","MainControllerName").ToString(_controllerName);
+    _refForward     = _ini.Get("Blocks","ReferenceForward").ToString(_refForward);
+    _refUp          = _ini.Get("Blocks","ReferenceUp").ToString(_refUp);
 
     // alignment options
-    _alignToHost = _ini.Get("Control","AlignToHost").ToBoolean(true);
-    _alignKp     = _ini.Get("Control","AlignKp").ToDouble(3.0);
-    double alignDeadzoneDeg = _ini.Get("Control","AlignDeadzoneDeg").ToDouble(2.0);
+    _alignToHost = _ini.Get("Control","AlignToHost").ToBoolean(_alignToHost);
+    _alignKp     = _ini.Get("Control","AlignKp").ToDouble(_alignKp);
+    double alignDeadzoneDeg = _ini.Get("Control","AlignDeadzoneDeg").ToDouble(_alignDeadzoneRad * 180.0 / Math.PI);
     _alignDeadzoneRad = alignDeadzoneDeg * Math.PI / 180.0;
 
     // total points
