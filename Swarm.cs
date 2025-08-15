@@ -253,6 +253,9 @@ void DiscoverBlocks()
             s.DetectEnemy = true;
             s.DetectFriendly = true;
             s.DetectOwner = true;
+            s.DetectLargeShips = true;
+            s.DetectSmallShips = true;
+            s.DetectStations = true;
             _sensors.Add(s);
         }
     }
@@ -537,6 +540,7 @@ void ControlStep()
             var s = _sensors[i];
             if (!s.IsWorking || !s.IsActive) continue;
 
+            _sensorContacts.Clear();
             s.DetectedEntities(_sensorContacts);
             for (int j=0; j<_sensorContacts.Count; j++)
             {
@@ -549,7 +553,6 @@ void ControlStep()
                 if (d > 1e-3 && d < _minSep)
                     accelCmd += sep * (_sepGain / d);
             }
-            _sensorContacts.Clear();
         }
     }
 
