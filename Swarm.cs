@@ -9,7 +9,6 @@
 
 const double PHI = 1.6180339887498948482;                  // golden ratio
 const double GOLDEN_ANGLE = 2.0 * Math.PI * (1.0 - 1.0/PHI);// ~2.399963
-const double HOST_AVOID_RAD = 3.0 * Math.PI / 180.0;        // 3 deg safety cone
 
 readonly System.Globalization.CultureInfo CI = System.Globalization.CultureInfo.InvariantCulture;
 
@@ -54,7 +53,6 @@ IMyShipController _controller;
 readonly System.Collections.Generic.List<IMyGyro> _gyros = new System.Collections.Generic.List<IMyGyro>(16);
 readonly System.Collections.Generic.List<IMyThrust> _thrusters = new System.Collections.Generic.List<IMyThrust>(64);
 readonly System.Collections.Generic.List<IMySensorBlock> _sensors = new System.Collections.Generic.List<IMySensorBlock>(8);
-readonly System.Collections.Generic.List<IMyLargeTurretBase> _weapons = new System.Collections.Generic.List<IMyLargeTurretBase>(16);
 
 ThrusterAxis _axisX = new ThrusterAxis(); // +Right / -Right
 ThrusterAxis _axisY = new ThrusterAxis(); // +Up / -Up
@@ -221,7 +219,6 @@ void DiscoverBlocks()
     _gyros.Clear();
     _thrusters.Clear();
     _sensors.Clear();
-    _weapons.Clear();
     _axisX.Reset(); _axisY.Reset(); _axisZ.Reset();
 
     var tmp = new System.Collections.Generic.List<IMyTerminalBlock>(128);
@@ -247,9 +244,6 @@ void DiscoverBlocks()
 
         var t = b as IMyThrust;
         if (t != null) { _thrusters.Add(t); continue; }
-
-        var w = b as IMyLargeTurretBase;
-        if (w != null) { _weapons.Add(w); continue; }
 
         var s = b as IMySensorBlock;
         if (s != null && s.CustomName.IndexOf("[Swarm Sensor]", System.StringComparison.OrdinalIgnoreCase) >= 0)
@@ -438,8 +432,6 @@ void SatStep()
 
     // Control step ~2 Hz (every 3rd Update10 tick)
     if ((_tick % 3) == 0) ControlStep();
-
-    HandleWeapons();
 
     // Status ~0.5 Hz (every 12th Update10 tick)
     if ((_tick % 12) == 0) SendStatus();
@@ -723,86 +715,6 @@ void SendStatus()
     _sb.Append(_index); _sb.Append('|');
     AppendVector(pos);
     IGC.SendBroadcastMessage(_statusTag, _sb.ToString(), TransmissionDistance.TransmissionDistanceMax);
-}
-
-void HandleWeapons()
-{
-    if (_controller == null || _weapons.Count == 0) return;
-    Vector3D myPos = _controller.GetPosition();
-    MyDetectedEntityInfo target = new MyDetectedEntityInfo();
-    bool hasTarget = false;
-    double minDistSq = double.MaxValue;
-
-    for (int i=0; i<_sensors.Count; i++)
-    {
-        var s = _sensors[i];
-        if (!s.IsWorking || !s.IsActive) continue;
-        var info = s.LastDetectedEntity;
-        if (info.Type != MyDetectedEntityType.SmallGrid && info.Type != MyDetectedEntityType.LargeGrid) continue;
-        if (info.Relationship != MyRelationsBetweenPlayerAndBlock.Enemies) continue;
-        Vector3D diff = info.Position - myPos;
-        double dSq = diff.LengthSquared();
-        if (dSq < minDistSq)
-        {
-            minDistSq = dSq;
-            target = info;
-            hasTarget = true;
-        }
-    }
-
-    if (!hasTarget)
-    {
-        for (int i=0; i<_weapons.Count; i++)
-        {
-            var w = _weapons[i];
-            w.Enabled = true;
-            w.Shoot = false;
-        }
-        return;
-    }
-
-    Vector3D toEnemy = target.Position - myPos;
-    double distEnemy = System.Math.Sqrt(minDistSq);
-    Vector3D toHost = _hostPos - myPos;
-    double distHost = toHost.Length();
-
-    bool behindHost = false;
-    if (distHost > 1e-3 && distEnemy > distHost)
-    {
-        Vector3D dirEnemy = toEnemy / distEnemy;
-        Vector3D dirHost = toHost / distHost;
-        double dot = dirEnemy.X*dirHost.X + dirEnemy.Y*dirHost.Y + dirEnemy.Z*dirHost.Z;
-        if (dot > 1) dot = 1; else if (dot < -1) dot = -1;
-        double ang = System.Math.Acos(dot);
-        if (ang <= HOST_AVOID_RAD) behindHost = true;
-    }
-
-    if (behindHost)
-    {
-        for (int i=0; i<_weapons.Count; i++)
-        {
-            var w = _weapons[i];
-            w.Enabled = false;
-            w.Shoot = false;
-        }
-        return;
-    }
-
-    for (int i=0; i<_weapons.Count; i++)
-    {
-        var w = _weapons[i];
-        w.Enabled = true;
-        double range = w.GetMaximumRange();
-        if (distEnemy <= range)
-        {
-            w.TrackTarget(target.Position);
-            w.Shoot = true;
-        }
-        else
-        {
-            w.Shoot = false;
-        }
-    }
 }
 
 #endregion
