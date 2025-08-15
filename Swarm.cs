@@ -1,4 +1,5 @@
-// DragonSwarm (PB-safe) — Host/Satellite swarm with concentric Fibonacci spheres
+// DragonSwarm (PB-safe) — Host/Satellite swarm with concentric rings
+// - Ring planes are aligned with the host's Right/Up axes (perpendicular to Forward)
 // - Works fully inside the in-game Programmable Block (no usings)
 // - Stable cadence, low allocations, conservative control
 // - Fixes: correct host basis (Right = Forward x Up), robust thruster axis grouping,
@@ -7,8 +8,6 @@
 
 #region Fields & Config
 
-const double PHI = 1.6180339887498948482;                  // golden ratio
-const double GOLDEN_ANGLE = 2.0 * Math.PI * (1.0 - 1.0/PHI);// ~2.399963
 
 readonly System.Globalization.CultureInfo CI = System.Globalization.CultureInfo.InvariantCulture;
 
@@ -581,20 +580,15 @@ Vector3D ComputeTarget()
     int n = _pointsPerShell * (s+1);
     int j = _pointInShell;
 
-    double y = 1.0 - 2.0 * (j + 0.5) / System.Math.Max(1, n);
-    double r = System.Math.Sqrt(System.Math.Max(0.0, 1.0 - y*y));
-    double theta = j * GOLDEN_ANGLE;
-    double x = r * System.Math.Cos(theta);
-    double z = r * System.Math.Sin(theta);
-
-    Vector3D unit = new Vector3D(x, y, z);
+    double angle = (2.0 * System.Math.PI * j) / System.Math.Max(1, n);
     double radius = _baseRadius + s * _shellSpacing;
 
-    // Rotate with host frame
+    Vector3D unit = new Vector3D(System.Math.Cos(angle), System.Math.Sin(angle), 0);
+
+    // Ring plane perpendicular to host forward
     return _hostPos
-         + radius * ( _hostMatrix.Right   * unit.X
-                    + _hostMatrix.Up      * unit.Y
-                    + _hostMatrix.Forward * unit.Z );
+         + radius * ( _hostMatrix.Right * unit.X
+                    + _hostMatrix.Up    * unit.Y );
 }
 
 void ApplyThrust(ThrusterAxis axis, double accel)
