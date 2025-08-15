@@ -32,7 +32,7 @@ double _gyroKp = 3.0;      // pointing gain
 double _arrival = 10.0;     // meters: zero-thrust hold inside this
 
 double _minSep = 18.0;     // meters: separation sensing
-double _sepGain = 1.1;
+double _sepGain = 2.2;
 double _hostBuffer = 22.0; // radial push-out inside shell
 bool _useSensors = true;
 
@@ -520,8 +520,9 @@ void ControlStep()
     Vector3D toHost = myPos - _hostPos;
     double distHost = toHost.Length();
     double desiredR = _baseRadius + _shellOfIndex * _shellSpacing;
-    if (distHost > 1e-3 && distHost < (desiredR - _hostBuffer))
-        accelCmd += (toHost / distHost) * _sepGain;
+    double penetration = desiredR - distHost;
+    if (distHost > 1e-3 && penetration > 0)
+        accelCmd += Vector3D.Normalize(toHost) * _sepGain * penetration / _hostBuffer;
 
     // Sensor-based separation (optional)
     if (_useSensors && _sensors.Count > 0)
@@ -537,7 +538,7 @@ void ControlStep()
             Vector3D sep = myPos - p;
             double d = sep.Length();
             if (d > 1e-3 && d < _minSep)
-                accelCmd += sep * (_sepGain / d);
+                accelCmd += Vector3D.Normalize(sep) * _sepGain * (_minSep - d) / _minSep;
         }
     }
 
