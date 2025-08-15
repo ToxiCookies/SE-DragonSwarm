@@ -53,6 +53,7 @@ IMyShipController _controller;
 readonly System.Collections.Generic.List<IMyGyro> _gyros = new System.Collections.Generic.List<IMyGyro>(16);
 readonly System.Collections.Generic.List<IMyThrust> _thrusters = new System.Collections.Generic.List<IMyThrust>(64);
 readonly System.Collections.Generic.List<IMySensorBlock> _sensors = new System.Collections.Generic.List<IMySensorBlock>(8);
+readonly System.Collections.Generic.List<MyDetectedEntityInfo> _sensorContacts = new System.Collections.Generic.List<MyDetectedEntityInfo>(16);
 
 ThrusterAxis _axisX = new ThrusterAxis(); // +Right / -Right
 ThrusterAxis _axisY = new ThrusterAxis(); // +Up / -Up
@@ -248,7 +249,12 @@ void DiscoverBlocks()
 
         var s = b as IMySensorBlock;
         if (s != null && s.CustomName.IndexOf("[Swarm Sensor]", System.StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            s.DetectEnemy = true;
+            s.DetectFriendly = true;
+            s.DetectOwner = true;
             _sensors.Add(s);
+        }
     }
 
     // fallback controller if named one not found
@@ -530,14 +536,20 @@ void ControlStep()
         {
             var s = _sensors[i];
             if (!s.IsWorking || !s.IsActive) continue;
-            var info = s.LastDetectedEntity;
-            if (info.Type == MyDetectedEntityType.None) continue;
 
-            Vector3D p = info.Position; // world
-            Vector3D sep = myPos - p;
-            double d = sep.Length();
-            if (d > 1e-3 && d < _minSep)
-                accelCmd += sep * (_sepGain / d);
+            s.DetectedEntities(_sensorContacts);
+            for (int j=0; j<_sensorContacts.Count; j++)
+            {
+                var info = _sensorContacts[j];
+                if (info.Type == MyDetectedEntityType.None) continue;
+
+                Vector3D p = info.Position; // world
+                Vector3D sep = myPos - p;
+                double d = sep.Length();
+                if (d > 1e-3 && d < _minSep)
+                    accelCmd += sep * (_sepGain / d);
+            }
+            _sensorContacts.Clear();
         }
     }
 
