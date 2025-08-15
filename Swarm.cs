@@ -248,7 +248,11 @@ void DiscoverBlocks()
 
         var s = b as IMySensorBlock;
         if (s != null && s.CustomName.IndexOf("[Swarm Sensor]", System.StringComparison.OrdinalIgnoreCase) >= 0)
+        {
             _sensors.Add(s);
+            if (!s.DetectFriendly)   s.DetectFriendly = true;
+            if (!s.DetectLargeShips) s.DetectLargeShips = true;
+        }
     }
 
     // fallback controller if named one not found
@@ -523,7 +527,7 @@ void ControlStep()
     if (distHost > 1e-3 && distHost < (desiredR - _hostBuffer))
         accelCmd += (toHost / distHost) * _sepGain;
 
-    // Sensor-based separation (optional)
+    // Separation: sensors if available, else formation fallback
     if (_useSensors && _sensors.Count > 0)
     {
         for (int i=0; i<_sensors.Count; i++)
@@ -534,6 +538,19 @@ void ControlStep()
             if (info.Type == MyDetectedEntityType.None) continue;
 
             Vector3D p = info.Position; // world
+            Vector3D sep = myPos - p;
+            double d = sep.Length();
+            if (d > 1e-3 && d < _minSep)
+                accelCmd += sep * (_sepGain / d);
+        }
+    }
+    else
+    {
+        for (int off=-1; off<=1; off++)
+        {
+            if (off == 0) continue;
+            int idx = (_index + _totalPoints + off) % _totalPoints;
+            Vector3D p = ComputeTargetForIndex(idx);
             Vector3D sep = myPos - p;
             double d = sep.Length();
             if (d > 1e-3 && d < _minSep)
@@ -578,24 +595,35 @@ void ControlStep()
 
 Vector3D ComputeTarget()
 {
-    int s = _shellOfIndex;
-    int n = _pointsPerShell * (s+1);
-    int j = _pointInShell;
+    return ComputeTargetForIndex(_index);
+}
 
-    double y = 1.0 - 2.0 * (j + 0.5) / System.Math.Max(1, n);
-    double r = System.Math.Sqrt(System.Math.Max(0.0, 1.0 - y*y));
-    double theta = j * GOLDEN_ANGLE;
-    double x = r * System.Math.Cos(theta);
-    double z = r * System.Math.Sin(theta);
+Vector3D ComputeTargetForIndex(int idx)
+{
+    int rem = idx;
+    for (int s=0; s<_shellCount; s++)
+    {
+        int n = _pointsPerShell * (s+1);
+        if (rem < n)
+        {
+            int j = rem;
+            double y = 1.0 - 2.0 * (j + 0.5) / System.Math.Max(1, n);
+            double r = System.Math.Sqrt(System.Math.Max(0.0, 1.0 - y*y));
+            double theta = j * GOLDEN_ANGLE;
+            double x = r * System.Math.Cos(theta);
+            double z = r * System.Math.Sin(theta);
 
-    Vector3D unit = new Vector3D(x, y, z);
-    double radius = _baseRadius + s * _shellSpacing;
+            Vector3D unit = new Vector3D(x, y, z);
+            double radius = _baseRadius + s * _shellSpacing;
 
-    // Rotate with host frame
-    return _hostPos
-         + radius * ( _hostMatrix.Right   * unit.X
-                    + _hostMatrix.Up      * unit.Y
-                    + _hostMatrix.Forward * unit.Z );
+            return _hostPos
+                 + radius * ( _hostMatrix.Right   * unit.X
+                            + _hostMatrix.Up      * unit.Y
+                            + _hostMatrix.Forward * unit.Z );
+        }
+        rem -= n;
+    }
+    return _hostPos;
 }
 
 void ApplyThrust(ThrusterAxis axis, double accel)
