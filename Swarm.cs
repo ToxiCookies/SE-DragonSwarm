@@ -81,7 +81,6 @@ int _tick = 0;
 int _totalPoints = 0;
 int _shellOfIndex = 0;
 int _pointInShell = 0;
-bool _kamikaze = false;
 
 // host telemetry data
 long _hostId;
@@ -591,24 +590,16 @@ void SatStep()
             if (s != null && msg.Tag == _cmdTag && s.StartsWith("CMD|", System.StringComparison.Ordinal))
             {
                 var parts = s.Split('|');
-                if (parts.Length > 1)
+                if (parts.Length > 1 && parts[1] == "DETONATE")
                 {
-                    if (parts[1] == "DETONATE")
+                    for (int i=0; i<_warheads.Count; i++)
                     {
-                        for (int i=0; i<_warheads.Count; i++)
+                        var w = _warheads[i];
+                        if (w != null)
                         {
-                            var w = _warheads[i];
-                            if (w != null)
-                            {
-                                w.IsArmed = true;
-                                w.Detonate();
-                            }
+                            w.IsArmed = true;
+                            w.Detonate();
                         }
-                        ClearOverrides();
-                    }
-                    else if (parts[1] == "KAMIKAZE")
-                    {
-                        _kamikaze = true;
                     }
                 }
                 else if (parts.Length > 1 && parts[1] == "KAMIKAZE")
@@ -629,7 +620,6 @@ void SatStep()
     if (_timeSinceTelemetry > 10.0)
     {
         ClearOverrides();
-        _kamikaze = false;
         return;
     }
 
@@ -694,75 +684,6 @@ void ControlStep()
     _shipMass = _controller.CalculateShipMass().PhysicalMass;
     Vector3D myPos = _controller.GetPosition();
     Vector3D vel   = _controller.GetShipVelocities().LinearVelocity;
-
-    if (_kamikaze)
-    {
-        Vector3D toHost = _hostPos - myPos;
-        Vector3D dir = Vector3D.Normalize(toHost);
-        MatrixD grid = Me.CubeGrid.WorldMatrix;
-        Vector3D localDir = Vector3D.TransformNormal(dir, MatrixD.Transpose(grid));
-
-        if (localDir.X >= 0)
-        {
-            for (int i=0; i<_axisX.Pos.Count; i++) _axisX.Pos[i].ThrustOverridePercentage = 1f;
-            for (int i=0; i<_axisX.Neg.Count; i++) _axisX.Neg[i].ThrustOverridePercentage = 0f;
-        }
-        else
-        {
-            for (int i=0; i<_axisX.Neg.Count; i++) _axisX.Neg[i].ThrustOverridePercentage = 1f;
-            for (int i=0; i<_axisX.Pos.Count; i++) _axisX.Pos[i].ThrustOverridePercentage = 0f;
-        }
-
-        if (localDir.Y >= 0)
-        {
-            for (int i=0; i<_axisY.Pos.Count; i++) _axisY.Pos[i].ThrustOverridePercentage = 1f;
-            for (int i=0; i<_axisY.Neg.Count; i++) _axisY.Neg[i].ThrustOverridePercentage = 0f;
-        }
-        else
-        {
-            for (int i=0; i<_axisY.Neg.Count; i++) _axisY.Neg[i].ThrustOverridePercentage = 1f;
-            for (int i=0; i<_axisY.Pos.Count; i++) _axisY.Pos[i].ThrustOverridePercentage = 0f;
-        }
-
-        if (localDir.Z >= 0)
-        {
-            for (int i=0; i<_axisZ.Pos.Count; i++) _axisZ.Pos[i].ThrustOverridePercentage = 1f;
-            for (int i=0; i<_axisZ.Neg.Count; i++) _axisZ.Neg[i].ThrustOverridePercentage = 0f;
-        }
-        else
-        {
-            for (int i=0; i<_axisZ.Neg.Count; i++) _axisZ.Neg[i].ThrustOverridePercentage = 1f;
-            for (int i=0; i<_axisZ.Pos.Count; i++) _axisZ.Pos[i].ThrustOverridePercentage = 0f;
-        }
-
-        ApplyGyros(toHost);
-
-        bool det = false;
-        if (_useSensors && _sensors.Count > 0)
-        {
-            for (int i=0; i<_sensors.Count; i++)
-            {
-                var s = _sensors[i];
-                if (s.IsWorking && s.IsActive) { det = true; break; }
-            }
-        }
-        if (!det && toHost.LengthSquared() < 25.0) det = true;
-        if (det)
-        {
-            for (int i=0; i<_warheads.Count; i++)
-            {
-                var w = _warheads[i];
-                if (w != null)
-                {
-                    w.IsArmed = true;
-                    w.Detonate();
-                }
-            }
-            ClearOverrides();
-            _kamikaze = false;
-        }
-        return;
-    }
 
     // Host-relative target and error
     Vector3D target = ComputeTarget();
