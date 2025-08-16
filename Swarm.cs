@@ -20,9 +20,9 @@ System.Text.StringBuilder _echo = new System.Text.StringBuilder(512);
 Role _role = Role.Host;
 string _formationGroup = "SwarmAlpha";
 int _shellCount = 3;
-int _pointsPerShell = 24;
-double _shellSpacing = 250.0;
-double _baseRadius = 1000.0;
+int _pointsPerShell = 16;
+double _shellSpacing = 400.0;
+double _baseRadius = 2000.0;
 
 double _maxSpeed = 50.0;   // m/s cap (relative to host)
 double _kp = 0.6;          // position P gain (to velocity)
@@ -34,7 +34,7 @@ double _arrival = 10.0;     // meters: zero-thrust hold inside this
 double _minSep = 18.0;     // meters: separation sensing
 double _sepGain = 1.1;
 double _hostBuffer = 22.0; // buffer distance beyond host radius
-double _hostRadius = 0.0;  // meters: host grid radius for push-out zone
+double _hostRadius = 100.0;  // meters: host grid radius for push-out zone
 bool _useSensors = true;   // sensors must include "[Swarm Sensor]" in name
 bool _sensorFallback = false; // true when sensors missing
 
