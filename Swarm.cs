@@ -50,6 +50,7 @@ string _refUp = string.Empty;      // reserved
 int _index = -1; // satellite index (global)
 bool _debug = false;
 bool _kamikaze = false; // dive into host and detonate
+bool _weaponsEnabled = true; // allow weapon firing
 
 // cached blocks
 IMyShipController _controller;
@@ -417,6 +418,14 @@ public void Main(string argument, UpdateType updateSource)
         {
             IGC.SendBroadcastMessage(_cmdTag, "CMD|KAMIKAZE|", TransmissionDistance.TransmissionDistanceMax);
         }
+        else if (argument == "ceasefire" && _role == Role.Host)
+        {
+            IGC.SendBroadcastMessage(_cmdTag, "CMD|CEASEFIRE|", TransmissionDistance.TransmissionDistanceMax);
+        }
+        else if (argument == "rearm" && _role == Role.Host)
+        {
+            IGC.SendBroadcastMessage(_cmdTag, "CMD|REARM|", TransmissionDistance.TransmissionDistanceMax);
+        }
     }
 
     double dt = Runtime.TimeSinceLastRun.TotalSeconds;
@@ -451,6 +460,11 @@ public void Main(string argument, UpdateType updateSource)
 
 void WeaponStep()
 {
+    if (!_weaponsEnabled)
+    {
+        CeaseFire();
+        return;
+    }
     if (_trackingTurret == null || _weapons.Count == 0) return;
 
     long targetId = 0;
@@ -612,6 +626,15 @@ void SatStep()
                             var w = _warheads[i];
                             if (w != null) w.IsArmed = true;
                         }
+                    }
+                    else if (parts[1] == "CEASEFIRE")
+                    {
+                        _weaponsEnabled = false;
+                        CeaseFire();
+                    }
+                    else if (parts[1] == "REARM")
+                    {
+                        _weaponsEnabled = true;
                     }
                 }
             }
