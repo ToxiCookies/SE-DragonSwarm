@@ -413,10 +413,6 @@ public void Main(string argument, UpdateType updateSource)
         {
             IGC.SendBroadcastMessage(_cmdTag, "CMD|DETONATE|", TransmissionDistance.TransmissionDistanceMax);
         }
-        else if (argument == "kamikaze" && _role == Role.Host)
-        {
-            IGC.SendBroadcastMessage(_cmdTag, "CMD|KAMIKAZE|", TransmissionDistance.TransmissionDistanceMax);
-        }
     }
 
     double dt = Runtime.TimeSinceLastRun.TotalSeconds;
