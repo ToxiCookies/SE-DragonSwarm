@@ -56,6 +56,10 @@ readonly System.Collections.Generic.List<IMyGyro> _gyros = new System.Collection
 readonly System.Collections.Generic.List<IMyThrust> _thrusters = new System.Collections.Generic.List<IMyThrust>(64);
 readonly System.Collections.Generic.List<IMySensorBlock> _sensors = new System.Collections.Generic.List<IMySensorBlock>(8);
 readonly System.Collections.Generic.List<IMyWarhead> _warheads = new System.Collections.Generic.List<IMyWarhead>(8);
+readonly System.Collections.Generic.List<IMyTerminalBlock> _weapons = new System.Collections.Generic.List<IMyTerminalBlock>(32);
+IMyTerminalBlock _trackingTurret;
+
+readonly System.Collections.Generic.HashSet<long> _friendGrids = new System.Collections.Generic.HashSet<long>();
 
 ThrusterAxis _axisX = new ThrusterAxis(); // +Right / -Right
 ThrusterAxis _axisY = new ThrusterAxis(); // +Up / -Up
@@ -64,10 +68,12 @@ ThrusterAxis _axisZ = new ThrusterAxis(); // +Forward / -Forward
 IMyBroadcastListener _hostListener;   // for satellites
 IMyBroadcastListener _statusListener; // for host
 IMyBroadcastListener _cmdListener;    // command listener for satellites
+IMyBroadcastListener _friendListener; // friend grid IDs
 
 string _hostTag;
 string _statusTag;
 string _cmdTag;
+string _friendTag;
 
 // runtime
 int _tick = 0;
@@ -227,6 +233,8 @@ void DiscoverBlocks()
     _thrusters.Clear();
     _sensors.Clear();
     _warheads.Clear();
+    _weapons.Clear();
+    _trackingTurret = null;
     _axisX.Reset(); _axisY.Reset(); _axisZ.Reset();
 
     var tmp = new System.Collections.Generic.List<IMyTerminalBlock>(128);
@@ -255,6 +263,26 @@ void DiscoverBlocks()
 
         var w = b as IMyWarhead;
         if (w != null) { _warheads.Add(w); continue; }
+
+        var gun = b as IMyUserControllableGun;
+        if (gun != null)
+        {
+            _weapons.Add(gun);
+            if (_trackingTurret == null)
+            {
+                var lt = gun as IMyLargeTurretBase;
+                if (lt != null) _trackingTurret = lt;
+            }
+            continue;
+        }
+
+        if (b.GetActionWithName("Shoot_On") != null && b.GetActionWithName("Shoot_Off") != null)
+        {
+            _weapons.Add(b);
+            if (_trackingTurret == null && b.GetProperty("WC_TargetLock") != null)
+                _trackingTurret = b;
+            continue;
+        }
 
         var s = b as IMySensorBlock;
         if (s != null && s.CustomName.IndexOf("[Swarm Sensor]", System.StringComparison.OrdinalIgnoreCase) >= 0)
@@ -327,10 +355,12 @@ void SetupIGC()
     _hostTag   = _formationGroup + ".HOST.TELEMETRY";
     _statusTag = _formationGroup + ".SAT.STATUS";
     _cmdTag    = _formationGroup + ".CMD";
+    _friendTag = _formationGroup + ".FRIEND";
 
     _hostListener   = null;
     _statusListener = null;
     _cmdListener    = null;
+    _friendListener = null;
 
     if (_role == Role.Satellite)
     {
@@ -344,6 +374,9 @@ void SetupIGC()
         _statusListener = IGC.RegisterBroadcastListener(_statusTag);
         _statusListener.SetMessageCallback(_statusTag);
     }
+
+    _friendListener = IGC.RegisterBroadcastListener(_friendTag);
+    _friendListener.SetMessageCallback(_friendTag);
 }
 
 #endregion
@@ -386,11 +419,97 @@ public void Main(string argument, UpdateType updateSource)
     _timeSinceTelemetry += dt;
     _tick++;
 
+    if (_friendListener != null)
+    {
+        while (_friendListener.HasPendingMessage)
+        {
+            var msg = _friendListener.AcceptMessage();
+            var s = msg.Data as string;
+            if (s != null)
+            {
+                long id;
+                if (long.TryParse(s, out id))
+                    _friendGrids.Add(id);
+            }
+        }
+    }
+
     if (_role == Role.Host) HostStep();
     else SatStep();
 
+    WeaponStep();
+
     EchoStatus();
 }
+
+#region Weapons
+
+void WeaponStep()
+{
+    if (_trackingTurret == null || _weapons.Count == 0) return;
+
+    long targetId = 0;
+    double targetDist = double.MaxValue;
+    bool hasTarget = false;
+
+    var vt = _trackingTurret as IMyLargeTurretBase;
+    if (vt != null)
+    {
+        var info = vt.GetTargetedEntity();
+        if (!info.IsEmpty())
+        {
+            hasTarget = true;
+            targetId = info.EntityId;
+            targetDist = Vector3D.Distance(info.Position, vt.GetPosition());
+        }
+    }
+    else
+    {
+        if (_trackingTurret.GetProperty("WC_TargetLock") != null)
+        {
+            targetId = _trackingTurret.GetValue<long>("WC_TargetLock");
+            if (targetId != 0)
+            {
+                hasTarget = true;
+                if (_trackingTurret.GetProperty("WC_TargetPosition") != null)
+                {
+                    Vector3D tpos = _trackingTurret.GetValue<Vector3D>("WC_TargetPosition");
+                    targetDist = Vector3D.Distance(tpos, _trackingTurret.GetPosition());
+                }
+            }
+        }
+    }
+
+    bool friendly = _friendGrids.Contains(targetId);
+    if (hasTarget && targetDist <= 12000.0 && !friendly)
+        FireWeapons(targetId);
+    else
+        CeaseFire();
+}
+
+void FireWeapons(long id)
+{
+    for (int i=0; i<_weapons.Count; i++)
+    {
+        var w = _weapons[i];
+        w.ApplyAction("Shoot_On");
+        if (w.GetProperty("WC_TargetLock") != null)
+            w.SetValue<long>("WC_TargetLock", id);
+    }
+}
+
+void CeaseFire()
+{
+    for (int i=0; i<_weapons.Count; i++)
+    {
+        var w = _weapons[i];
+        w.ApplyAction("Shoot_Off");
+        if (w.GetProperty("WC_TargetLock") != null)
+            w.SetValue<long>("WC_TargetLock", 0L);
+    }
+}
+
+#endregion
 
 #region Host
 
