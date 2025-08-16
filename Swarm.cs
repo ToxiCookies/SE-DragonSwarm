@@ -49,6 +49,7 @@ string _refUp = string.Empty;      // reserved
 
 int _index = -1; // satellite index (global)
 bool _debug = false;
+bool _kamikaze = false; // dive into host and detonate
 
 // cached blocks
 IMyShipController _controller;
@@ -412,6 +413,10 @@ public void Main(string argument, UpdateType updateSource)
         {
             IGC.SendBroadcastMessage(_cmdTag, "CMD|DETONATE|", TransmissionDistance.TransmissionDistanceMax);
         }
+        else if (argument == "kamikaze" && _role == Role.Host)
+        {
+            IGC.SendBroadcastMessage(_cmdTag, "CMD|KAMIKAZE|", TransmissionDistance.TransmissionDistanceMax);
+        }
     }
 
     double dt = Runtime.TimeSinceLastRun.TotalSeconds;
@@ -585,15 +590,27 @@ void SatStep()
             if (s != null && msg.Tag == _cmdTag && s.StartsWith("CMD|", System.StringComparison.Ordinal))
             {
                 var parts = s.Split('|');
-                if (parts.Length > 1 && parts[1] == "DETONATE")
+                if (parts.Length > 1)
                 {
-                    for (int i=0; i<_warheads.Count; i++)
+                    if (parts[1] == "DETONATE")
                     {
-                        var w = _warheads[i];
-                        if (w != null)
+                        for (int i=0; i<_warheads.Count; i++)
                         {
-                            w.IsArmed = true;
-                            w.Detonate();
+                            var w = _warheads[i];
+                            if (w != null)
+                            {
+                                w.IsArmed = true;
+                                w.Detonate();
+                            }
+                        }
+                    }
+                    else if (parts[1] == "KAMIKAZE")
+                    {
+                        _kamikaze = true;
+                        for (int i=0; i<_warheads.Count; i++)
+                        {
+                            var w = _warheads[i];
+                            if (w != null) w.IsArmed = true;
                         }
                     }
                 }
@@ -665,6 +682,12 @@ bool TryReadVec(string[] p, ref int idx, out Vector3D v)
 void ControlStep()
 {
     if (_controller == null) return;
+
+    if (_kamikaze)
+    {
+        KamikazeStep();
+        return;
+    }
 
     _shipMass = _controller.CalculateShipMass().PhysicalMass;
     Vector3D myPos = _controller.GetPosition();
@@ -757,6 +780,36 @@ void ControlStep()
     ApplyGyros(steer);
 }
 
+void KamikazeStep()
+{
+    Vector3D myPos = _controller.GetPosition();
+    Vector3D toHost = _hostPos - myPos;
+    double dist = toHost.Length();
+    if (dist > 1e-3)
+    {
+        Vector3D dir = toHost / dist;
+        MatrixD grid = Me.CubeGrid.WorldMatrix;
+        Vector3D local = Vector3D.TransformNormal(dir, MatrixD.Transpose(grid));
+        FullThrustAxis(_axisX, local.X);
+        FullThrustAxis(_axisY, local.Y);
+        FullThrustAxis(_axisZ, local.Z);
+        ApplyGyros(toHost);
+    }
+
+    if (dist < 10.0)
+    {
+        for (int i=0; i<_warheads.Count; i++)
+        {
+            var w = _warheads[i];
+            if (w != null)
+            {
+                w.IsArmed = true;
+                w.Detonate();
+            }
+        }
+    }
+}
+
 Vector3D ComputeTarget()
 {
     int s = _shellOfIndex;
@@ -800,6 +853,27 @@ void ApplyThrust(ThrusterAxis axis, double accel)
         if (pct > 1) pct = 1;
         for (int i=0; i<axis.Neg.Count; i++) axis.Neg[i].ThrustOverridePercentage = (float)pct;
         for (int i=0; i<axis.Pos.Count; i++) axis.Pos[i].ThrustOverridePercentage = 0f;
+    }
+}
+
+void FullThrustAxis(ThrusterAxis axis, double dir)
+{
+    if (axis.Pos.Count == 0 && axis.Neg.Count == 0) return;
+
+    if (dir > 0.01)
+    {
+        for (int i=0; i<axis.Pos.Count; i++) axis.Pos[i].ThrustOverridePercentage = 1f;
+        for (int i=0; i<axis.Neg.Count; i++) axis.Neg[i].ThrustOverridePercentage = 0f;
+    }
+    else if (dir < -0.01)
+    {
+        for (int i=0; i<axis.Neg.Count; i++) axis.Neg[i].ThrustOverridePercentage = 1f;
+        for (int i=0; i<axis.Pos.Count; i++) axis.Pos[i].ThrustOverridePercentage = 0f;
+    }
+    else
+    {
+        for (int i=0; i<axis.Pos.Count; i++) axis.Pos[i].ThrustOverridePercentage = 0f;
+        for (int i=0; i<axis.Neg.Count; i++) axis.Neg[i].ThrustOverridePercentage = 0f;
     }
 }
 
