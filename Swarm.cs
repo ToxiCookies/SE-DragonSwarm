@@ -42,6 +42,7 @@ bool _sensorFallback = false; // true when sensors missing
 bool _alignToHost = true;           // align orientation to host when holding
 double _alignKp   = 3.0;            // angular P gain for alignment
 double _alignDeadzoneRad = 0.2; // ~2 deg
+FaceSide _parkingFace = FaceSide.MatchHost; // which face points away when parked
 
 string _controllerName = string.Empty;
 string _refForward = string.Empty; // reserved
@@ -96,6 +97,8 @@ double _timeSinceTelemetry = 1e6; // seconds
 double _shipMass = 0;
 
 enum Role { Host, Satellite }
+
+enum FaceSide { MatchHost, Forward, Backward, Up, Down, Left, Right }
 
 class ThrusterAxis {
     public readonly System.Collections.Generic.List<IMyThrust> Pos = new System.Collections.Generic.List<IMyThrust>(16);
@@ -184,6 +187,18 @@ void ParseIni()
     _alignKp     = _ini.Get("Control","AlignKp").ToDouble(_alignKp);
     double alignDeadzoneDeg = _ini.Get("Control","AlignDeadzoneDeg").ToDouble(_alignDeadzoneRad * 180.0 / Math.PI);
     _alignDeadzoneRad = alignDeadzoneDeg * Math.PI / 180.0;
+
+    string faceStr = _ini.Get("Control","ParkingFace").ToString("MatchHost");
+    switch(faceStr)
+    {
+        case "Forward": _parkingFace = FaceSide.Forward; break;
+        case "Backward": _parkingFace = FaceSide.Backward; break;
+        case "Up": _parkingFace = FaceSide.Up; break;
+        case "Down": _parkingFace = FaceSide.Down; break;
+        case "Left": _parkingFace = FaceSide.Left; break;
+        case "Right": _parkingFace = FaceSide.Right; break;
+        default: _parkingFace = FaceSide.MatchHost; break;
+    }
 
     // total points
     _totalPoints = 0;
@@ -723,12 +738,26 @@ void ControlStep()
     // Relative velocity (to host)
     Vector3D relVel = vel - _hostVel;
 
-    // ARRIVAL HOLD: close & slow → zero thrust and align to host (optional)
+    // ARRIVAL HOLD: close & slow → zero thrust and orient per config
     if (error.LengthSquared() <= (_arrival * _arrival) && relVel.LengthSquared() < 0.25) // ~0.5 m/s
     {
         ZeroThrust();
-        if (_alignToHost) ApplyGyrosAlignToHost();
-        else              ApplyGyros((_hostPos - myPos)); // fallback: face host
+        Vector3D fromHost = myPos - _hostPos;
+        switch (_parkingFace)
+        {
+            case FaceSide.Forward:
+            case FaceSide.Backward:
+            case FaceSide.Up:
+            case FaceSide.Down:
+            case FaceSide.Left:
+            case FaceSide.Right:
+                ApplyGyrosFaceAway(_parkingFace, fromHost);
+                break;
+            default:
+                if (_alignToHost) ApplyGyrosAlignToHost();
+                else              ApplyGyrosFaceAway(FaceSide.Backward, fromHost); // face host
+                break;
+        }
         return;
     }
 
@@ -931,6 +960,87 @@ void ApplyGyros(Vector3D desiredWorld)
         g.Roll  = (float)gyroVec.Z;
     }
 }
+// Orient a chosen ship face away from the host direction.
+// Returns true when within deadzone.
+bool ApplyGyrosFaceAway(FaceSide side, Vector3D hostDir)
+{
+    if (_controller == null) return true;
+    double lenSq = hostDir.LengthSquared();
+    if (lenSq < 1e-8)
+    {
+        for (int i=0; i<_gyros.Count; i++)
+        {
+            var g = _gyros[i];
+            g.GyroOverride = false;
+            g.Pitch = g.Yaw = g.Roll = 0f;
+        }
+        return true;
+    }
+    Vector3D outDir = hostDir / System.Math.Sqrt(lenSq);
+    Vector3D tF, tU, tR;
+    if (side == FaceSide.Forward || side == FaceSide.Backward)
+    {
+        tF = (side == FaceSide.Forward) ? outDir : -outDir;
+        Vector3D upHint = _hostMatrix.Up;
+        upHint -= tF * Vector3D.Dot(upHint, tF);
+        if (upHint.LengthSquared() < 1e-6)
+            upHint = _hostMatrix.Right - tF * Vector3D.Dot(_hostMatrix.Right, tF);
+        tU = Vector3D.Normalize(upHint);
+        tR = tF.Cross(tU);
+    }
+    else if (side == FaceSide.Up || side == FaceSide.Down)
+    {
+        tU = (side == FaceSide.Up) ? outDir : -outDir;
+        Vector3D fHint = _hostMatrix.Forward;
+        fHint -= tU * Vector3D.Dot(fHint, tU);
+        if (fHint.LengthSquared() < 1e-6)
+            fHint = _hostMatrix.Right - tU * Vector3D.Dot(_hostMatrix.Right, tU);
+        tF = Vector3D.Normalize(fHint);
+        tR = tF.Cross(tU);
+    }
+    else
+    {
+        tR = (side == FaceSide.Right) ? outDir : -outDir;
+        Vector3D uHint = _hostMatrix.Up;
+        uHint -= tR * Vector3D.Dot(uHint, tR);
+        if (uHint.LengthSquared() < 1e-6)
+            uHint = _hostMatrix.Forward - tR * Vector3D.Dot(_hostMatrix.Forward, tR);
+        tU = Vector3D.Normalize(uHint);
+        tF = tU.Cross(tR);
+    }
+    Vector3D sF = _controller.WorldMatrix.Forward;
+    Vector3D sU = _controller.WorldMatrix.Up;
+    Vector3D sR = _controller.WorldMatrix.Right;
+    Vector3D err = sF.Cross(tF) + sU.Cross(tU) + sR.Cross(tR);
+    double errMag = err.Length();
+    if (errMag < _alignDeadzoneRad)
+    {
+        for (int i=0; i<_gyros.Count; i++)
+        {
+            var g = _gyros[i];
+            g.GyroOverride = false;
+            g.Pitch = g.Yaw = g.Roll = 0f;
+        }
+        return true;
+    }
+    MatrixD invShip = MatrixD.Transpose(_controller.WorldMatrix);
+    Vector3D localRot = Vector3D.TransformNormal(err, invShip) * _alignKp;
+    if (localRot.X > 2) localRot.X = 2; if (localRot.X < -2) localRot.X = -2;
+    if (localRot.Y > 2) localRot.Y = 2; if (localRot.Y < -2) localRot.Y = -2;
+    if (localRot.Z > 2) localRot.Z = 2; if (localRot.Z < -2) localRot.Z = -2;
+    for (int i=0; i<_gyros.Count; i++)
+    {
+        var g = _gyros[i];
+        MatrixD inv = MatrixD.Transpose(g.WorldMatrix);
+        Vector3D gyroVec = Vector3D.TransformNormal(localRot, inv);
+        g.GyroOverride = true;
+        g.Pitch = (float)gyroVec.X;
+        g.Yaw   = (float)gyroVec.Y;
+        g.Roll  = (float)gyroVec.Z;
+    }
+    return false;
+}
+
 
 // Rotate the ship to match the host's orientation (Forward & Up).
 // Returns true if within deadzone (i.e., aligned enough).
