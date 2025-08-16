@@ -34,7 +34,8 @@ double _arrival = 10.0;     // meters: zero-thrust hold inside this
 double _minSep = 18.0;     // meters: separation sensing
 double _sepGain = 1.1;
 double _hostBuffer = 22.0; // radial push-out inside shell
-bool _useSensors = true;
+bool _useSensors = true;   // sensors must include "[Swarm Sensor]" in name
+bool _sensorFallback = false; // true when sensors missing
 
 // alignment options (new)
 bool _alignToHost = true;           // align orientation to host when holding
@@ -298,6 +299,20 @@ void DiscoverBlocks()
             if (accLocal.Z >= 0) { _axisZ.Pos.Add(t); _axisZ.MaxPos += t.MaxEffectiveThrust; }
             else                 { _axisZ.Neg.Add(t); _axisZ.MaxNeg += t.MaxEffectiveThrust; }
         }
+    }
+
+    if (_useSensors)
+    {
+        _sensorFallback = (_sensors.Count == 0);
+        if (_sensorFallback)
+        {
+            _useSensors = false;
+            _hostBuffer = Math.Max(_hostBuffer, _minSep * 2.0);
+        }
+    }
+    else
+    {
+        _sensorFallback = false;
     }
 }
 
@@ -798,6 +813,9 @@ void EchoStatus()
              .Append(" j").Append(_pointInShell).Append('\n');
         _echo.Append("Telm ").Append(System.Math.Round(_timeSinceTelemetry,1).ToString(CI)).Append("s\n");
     }
+
+    if (_sensorFallback)
+        _echo.Append("WARN: no [Swarm Sensor]\n");
 
     if (_debug && _controller != null)
     {
