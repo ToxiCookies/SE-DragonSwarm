@@ -61,6 +61,9 @@ readonly System.Collections.Generic.List<IMySensorBlock> _sensors = new System.C
 readonly System.Collections.Generic.List<IMyWarhead> _warheads = new System.Collections.Generic.List<IMyWarhead>(8);
 readonly System.Collections.Generic.List<IMyTerminalBlock> _weapons = new System.Collections.Generic.List<IMyTerminalBlock>(32);
 IMyTerminalBlock _trackingTurret;
+readonly System.Collections.Generic.List<IMyJumpDrive> _jumpDrives = new System.Collections.Generic.List<IMyJumpDrive>(8);
+Vector3D _jumpTarget;
+double _jumpDelay = -1.0; // seconds until executing a received jump
 
 readonly System.Collections.Generic.HashSet<long> _friendGrids = new System.Collections.Generic.HashSet<long>();
 
@@ -252,6 +255,7 @@ void DiscoverBlocks()
     _warheads.Clear();
     _weapons.Clear();
     _trackingTurret = null;
+    _jumpDrives.Clear();
     _axisX.Reset(); _axisY.Reset(); _axisZ.Reset();
 
     var tmp = new System.Collections.Generic.List<IMyTerminalBlock>(128);
@@ -277,6 +281,9 @@ void DiscoverBlocks()
 
         var t = b as IMyThrust;
         if (t != null) { _thrusters.Add(t); continue; }
+
+        var jd = b as IMyJumpDrive;
+        if (jd != null) { _jumpDrives.Add(jd); continue; }
 
         var w = b as IMyWarhead;
         if (w != null) { _warheads.Add(w); continue; }
@@ -440,6 +447,18 @@ public void Main(string argument, UpdateType updateSource)
         else if (argument == "rearm" && _role == Role.Host)
         {
             IGC.SendBroadcastMessage(_cmdTag, "CMD|REARM|", TransmissionDistance.TransmissionDistanceMax);
+        }
+        else if (argument == "jump" && _role == Role.Host)
+        {
+            if (_jumpDrives.Count > 0)
+            {
+                Vector3D tgt = _jumpDrives[0].GetValue<Vector3D>("JumpTarget");
+                _sb.Clear();
+                _sb.Append("CMD|JUMP|");
+                AppendVector(tgt);
+                IGC.SendBroadcastMessage(_cmdTag, _sb.ToString(), TransmissionDistance.TransmissionDistanceMax);
+                _jumpDrives[0].ApplyAction("Jump");
+            }
         }
     }
 
@@ -651,8 +670,36 @@ void SatStep()
                     {
                         _weaponsEnabled = true;
                     }
+                    else if (parts[1] == "JUMP" && parts.Length >= 5)
+                    {
+                        int idx = 2;
+                        Vector3D tgt;
+                        if (TryReadVec(parts, ref idx, out tgt))
+                        {
+                            _jumpTarget = tgt;
+                            _jumpDelay = 1.0; // small delay before jumping
+                        }
+                    }
                 }
             }
+        }
+    }
+
+    if (_jumpDelay >= 0.0)
+    {
+        _jumpDelay -= dt;
+        if (_jumpDelay <= 0.0)
+        {
+            for (int i=0; i<_jumpDrives.Count; i++)
+            {
+                var jd = _jumpDrives[i];
+                if (jd != null)
+                {
+                    jd.SetValue<Vector3D>("JumpTarget", _jumpTarget);
+                    jd.ApplyAction("Jump");
+                }
+            }
+            _jumpDelay = -1.0;
         }
     }
 
