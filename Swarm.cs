@@ -49,7 +49,6 @@ string _refUp = string.Empty;      // reserved
 
 int _index = -1; // satellite index (global)
 bool _debug = false;
-bool _kamikaze = false;
 
 // cached blocks
 IMyShipController _controller;
@@ -602,16 +601,6 @@ void SatStep()
                         }
                     }
                 }
-                else if (parts.Length > 1 && parts[1] == "KAMIKAZE")
-                {
-                    _kamikaze = true;
-                    for (int i=0; i<_warheads.Count; i++)
-                    {
-                        var w = _warheads[i];
-                        if (w != null)
-                            w.IsArmed = true;
-                    }
-                }
             }
         }
     }
@@ -728,16 +717,6 @@ void ControlStep()
             if (!s.IsWorking || !s.IsActive) continue;
             var info = s.LastDetectedEntity;
             if (info.Type == MyDetectedEntityType.None) continue;
-
-            if (_kamikaze)
-            {
-                for (int j=0; j<_warheads.Count; j++)
-                {
-                    var w = _warheads[j];
-                    if (w != null)
-                        w.Detonate();
-                }
-            }
 
             Vector3D p = info.Position; // world
             Vector3D sep = myPos - p;
