@@ -53,6 +53,7 @@ IMyShipController _controller;
 readonly System.Collections.Generic.List<IMyGyro> _gyros = new System.Collections.Generic.List<IMyGyro>(16);
 readonly System.Collections.Generic.List<IMyThrust> _thrusters = new System.Collections.Generic.List<IMyThrust>(64);
 readonly System.Collections.Generic.List<IMySensorBlock> _sensors = new System.Collections.Generic.List<IMySensorBlock>(8);
+readonly System.Collections.Generic.List<IMyWarhead> _warheads = new System.Collections.Generic.List<IMyWarhead>(8);
 
 ThrusterAxis _axisX = new ThrusterAxis(); // +Right / -Right
 ThrusterAxis _axisY = new ThrusterAxis(); // +Up / -Up
@@ -60,9 +61,11 @@ ThrusterAxis _axisZ = new ThrusterAxis(); // +Forward / -Forward
 
 IMyBroadcastListener _hostListener;   // for satellites
 IMyBroadcastListener _statusListener; // for host
+IMyBroadcastListener _cmdListener;    // command listener for satellites
 
 string _hostTag;
 string _statusTag;
+string _cmdTag;
 
 // runtime
 int _tick = 0;
@@ -220,6 +223,7 @@ void DiscoverBlocks()
     _gyros.Clear();
     _thrusters.Clear();
     _sensors.Clear();
+    _warheads.Clear();
     _axisX.Reset(); _axisY.Reset(); _axisZ.Reset();
 
     var tmp = new System.Collections.Generic.List<IMyTerminalBlock>(128);
@@ -245,6 +249,9 @@ void DiscoverBlocks()
 
         var t = b as IMyThrust;
         if (t != null) { _thrusters.Add(t); continue; }
+
+        var w = b as IMyWarhead;
+        if (w != null) { _warheads.Add(w); continue; }
 
         var s = b as IMySensorBlock;
         if (s != null && s.CustomName.IndexOf("[Swarm Sensor]", System.StringComparison.OrdinalIgnoreCase) >= 0)
@@ -302,14 +309,18 @@ void SetupIGC()
 {
     _hostTag   = _formationGroup + ".HOST.TELEMETRY";
     _statusTag = _formationGroup + ".SAT.STATUS";
+    _cmdTag    = _formationGroup + ".CMD";
 
     _hostListener   = null;
     _statusListener = null;
+    _cmdListener    = null;
 
     if (_role == Role.Satellite)
     {
         _hostListener = IGC.RegisterBroadcastListener(_hostTag);
         _hostListener.SetMessageCallback(_hostTag); // optional
+        _cmdListener = IGC.RegisterBroadcastListener(_cmdTag);
+        _cmdListener.SetMessageCallback(_cmdTag);
     }
     else
     {
@@ -346,6 +357,10 @@ public void Main(string argument, UpdateType updateSource)
                     MapIndexToShellPoint(_index);
                 }
             }
+        }
+        else if (argument == "boom" && _role == Role.Host)
+        {
+            IGC.SendBroadcastMessage(_cmdTag, "CMD|DETONATE|", TransmissionDistance.TransmissionDistanceMax);
         }
     }
 
@@ -420,6 +435,32 @@ void SatStep()
             {
                 if (ParseTelemetry(s))
                     _timeSinceTelemetry = 0.0;
+            }
+        }
+    }
+
+    // Poll command messages
+    if (_cmdListener != null)
+    {
+        while (_cmdListener.HasPendingMessage)
+        {
+            var msg = _cmdListener.AcceptMessage();
+            var s = msg.Data as string;
+            if (s != null && msg.Tag == _cmdTag && s.StartsWith("CMD|", System.StringComparison.Ordinal))
+            {
+                var parts = s.Split('|');
+                if (parts.Length > 1 && parts[1] == "DETONATE")
+                {
+                    for (int i=0; i<_warheads.Count; i++)
+                    {
+                        var w = _warheads[i];
+                        if (w != null)
+                        {
+                            w.IsArmed = true;
+                            w.Detonate();
+                        }
+                    }
+                }
             }
         }
     }
