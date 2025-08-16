@@ -59,6 +59,13 @@ readonly System.Collections.Generic.List<IMySensorBlock> _sensors = new System.C
 readonly System.Collections.Generic.List<IMyWarhead> _warheads = new System.Collections.Generic.List<IMyWarhead>(8);
 readonly System.Collections.Generic.List<IMyTerminalBlock> _weapons = new System.Collections.Generic.List<IMyTerminalBlock>(32);
 IMyTerminalBlock _trackingTurret;
+readonly System.Collections.Generic.List<IMyRadioAntenna> _antennas = new System.Collections.Generic.List<IMyRadioAntenna>(4);
+readonly System.Collections.Generic.List<string> _antennaNames = new System.Collections.Generic.List<string>(4);
+
+bool _ammoKamikaze = false;  // dive into hostile when empty
+bool _outOfAmmo = false;
+bool _kamikazeToHost = false;
+Vector3D _kamikazeTarget = Vector3D.Zero;
 
 readonly System.Collections.Generic.HashSet<long> _friendGrids = new System.Collections.Generic.HashSet<long>();
 
@@ -236,6 +243,8 @@ void DiscoverBlocks()
     _warheads.Clear();
     _weapons.Clear();
     _trackingTurret = null;
+    _antennas.Clear();
+    _antennaNames.Clear();
     _axisX.Reset(); _axisY.Reset(); _axisZ.Reset();
 
     var tmp = new System.Collections.Generic.List<IMyTerminalBlock>(128);
@@ -264,6 +273,9 @@ void DiscoverBlocks()
 
         var w = b as IMyWarhead;
         if (w != null) { _warheads.Add(w); continue; }
+
+        var ant = b as IMyRadioAntenna;
+        if (ant != null) { _antennas.Add(ant); _antennaNames.Add(ant.CustomName); continue; }
 
         var gun = b as IMyUserControllableGun;
         if (gun != null)
@@ -417,6 +429,12 @@ public void Main(string argument, UpdateType updateSource)
         {
             IGC.SendBroadcastMessage(_cmdTag, "CMD|KAMIKAZE|", TransmissionDistance.TransmissionDistanceMax);
         }
+        else if (argument.StartsWith("kamikazeempty", System.StringComparison.OrdinalIgnoreCase) && _role == Role.Host)
+        {
+            bool en = argument.EndsWith("on", System.StringComparison.OrdinalIgnoreCase);
+            string msg = en ? "CMD|AMMO_KAMIKAZE|ON" : "CMD|AMMO_KAMIKAZE|OFF";
+            IGC.SendBroadcastMessage(_cmdTag, msg, TransmissionDistance.TransmissionDistanceMax);
+        }
     }
 
     double dt = Runtime.TimeSinceLastRun.TotalSeconds;
@@ -443,6 +461,8 @@ public void Main(string argument, UpdateType updateSource)
     else SatStep();
 
     WeaponStep();
+    if (_role == Role.Satellite)
+        AmmoStep();
 
     EchoStatus();
 }
@@ -511,6 +531,119 @@ void CeaseFire()
         w.ApplyAction("Shoot_Off");
         if (w.GetProperty("WC_TargetLock") != null)
             w.SetValue<long>("WC_TargetLock", 0L);
+    }
+}
+
+void AmmoStep()
+{
+    if (_weapons.Count == 0) return;
+
+    bool anyAmmo = false;
+    for (int i=0; i<_weapons.Count; i++)
+    {
+        var gun = _weapons[i] as IMyUserControllableGun;
+        if (gun != null && gun.HasAmmo) { anyAmmo = true; break; }
+    }
+
+    if (!anyAmmo)
+    {
+        if (!_outOfAmmo)
+        {
+            _outOfAmmo = true;
+            if (_ammoKamikaze)
+            {
+                Vector3D pos;
+                if (TryAcquireHostile(out pos))
+                {
+                    _kamikaze = true;
+                    _kamikazeToHost = false;
+                    _kamikazeTarget = pos;
+                    for (int i=0; i<_warheads.Count; i++)
+                    {
+                        var w = _warheads[i];
+                        if (w != null) w.IsArmed = true;
+                    }
+                }
+                else
+                {
+                    MarkAntennas();
+                }
+            }
+            else
+            {
+                MarkAntennas();
+            }
+        }
+        else if (_ammoKamikaze && !_kamikaze)
+        {
+            Vector3D pos;
+            if (TryAcquireHostile(out pos))
+            {
+                RestoreAntennas();
+                _kamikaze = true;
+                _kamikazeToHost = false;
+                _kamikazeTarget = pos;
+                for (int i=0; i<_warheads.Count; i++)
+                {
+                    var w = _warheads[i];
+                    if (w != null) w.IsArmed = true;
+                }
+            }
+        }
+    }
+    else if (_outOfAmmo)
+    {
+        _outOfAmmo = false;
+        RestoreAntennas();
+    }
+}
+
+bool TryAcquireHostile(out Vector3D pos)
+{
+    pos = Vector3D.Zero;
+    if (_trackingTurret != null)
+    {
+        var vt = _trackingTurret as IMyLargeTurretBase;
+        if (vt != null)
+        {
+            var info = vt.GetTargetedEntity();
+            if (!info.IsEmpty() && !_friendGrids.Contains(info.EntityId))
+            {
+                pos = info.Position;
+                return true;
+            }
+        }
+        else
+        {
+            if (_trackingTurret.GetProperty("WC_TargetLock") != null)
+            {
+                long id = _trackingTurret.GetValue<long>("WC_TargetLock");
+                if (id != 0 && !_friendGrids.Contains(id) && _trackingTurret.GetProperty("WC_TargetPosition") != null)
+                {
+                    pos = _trackingTurret.GetValue<Vector3D>("WC_TargetPosition");
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+void MarkAntennas()
+{
+    for (int i=0; i<_antennas.Count; i++)
+    {
+        var a = _antennas[i];
+        if (a != null) a.CustomName = _antennaNames[i] + " [RESUPPLY]";
+    }
+}
+
+void RestoreAntennas()
+{
+    for (int i=0; i<_antennas.Count && i<_antennaNames.Count; i++)
+    {
+        var a = _antennas[i];
+        if (a != null) a.CustomName = _antennaNames[i];
     }
 }
 
@@ -607,11 +740,16 @@ void SatStep()
                     else if (parts[1] == "KAMIKAZE")
                     {
                         _kamikaze = true;
+                        _kamikazeToHost = true;
                         for (int i=0; i<_warheads.Count; i++)
                         {
                             var w = _warheads[i];
                             if (w != null) w.IsArmed = true;
                         }
+                    }
+                    else if (parts[1] == "AMMO_KAMIKAZE" && parts.Length > 2)
+                    {
+                        _ammoKamikaze = (parts[2] == "ON");
                     }
                 }
             }
@@ -783,17 +921,18 @@ void ControlStep()
 void KamikazeStep()
 {
     Vector3D myPos = _controller.GetPosition();
-    Vector3D toHost = _hostPos - myPos;
-    double dist = toHost.Length();
+    Vector3D target = _kamikazeToHost ? _hostPos : _kamikazeTarget;
+    Vector3D toTarget = target - myPos;
+    double dist = toTarget.Length();
     if (dist > 1e-3)
     {
-        Vector3D dir = toHost / dist;
+        Vector3D dir = toTarget / dist;
         MatrixD grid = Me.CubeGrid.WorldMatrix;
         Vector3D local = Vector3D.TransformNormal(dir, MatrixD.Transpose(grid));
         FullThrustAxis(_axisX, local.X);
         FullThrustAxis(_axisY, local.Y);
         FullThrustAxis(_axisZ, local.Z);
-        ApplyGyros(toHost);
+        ApplyGyros(toTarget);
     }
 
     if (dist < 25.0)
