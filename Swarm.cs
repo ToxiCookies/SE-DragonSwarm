@@ -33,7 +33,8 @@ double _arrival = 10.0;     // meters: zero-thrust hold inside this
 
 double _minSep = 18.0;     // meters: separation sensing
 double _sepGain = 1.1;
-double _hostBuffer = 22.0; // radial push-out inside shell
+double _hostBuffer = 22.0; // buffer distance beyond host radius
+double _hostRadius = 0.0;  // meters: host grid radius for push-out zone
 bool _useSensors = true;   // sensors must include "[Swarm Sensor]" in name
 bool _sensorFallback = false; // true when sensors missing
 
@@ -163,6 +164,7 @@ void ParseIni()
     _minSep     = Math.Max(0.1, _ini.Get("Avoidance","MinSeparation").ToDouble(_minSep));
     _sepGain    = _ini.Get("Avoidance","SeparationGain").ToDouble(_sepGain);
     _hostBuffer = _ini.Get("Avoidance","HostBuffer").ToDouble(_hostBuffer);
+    _hostRadius = _ini.Get("Avoidance","HostRadius").ToDouble(_hostRadius);
     _useSensors = _ini.Get("Avoidance","UseSensors").ToBoolean(_useSensors);
 
     _controllerName = _ini.Get("Blocks","MainControllerName").ToString(_controllerName);
@@ -572,12 +574,16 @@ void ControlStep()
     Vector3D g = _controller.GetNaturalGravity();
     if (g.LengthSquared() > 1e-6) accelCmd -= g;
 
-    // Host buffer radial push-out (if too close inside shell)
+    // Host radius push-out: repulse when entering host radius + buffer
     Vector3D toHost = myPos - _hostPos;
     double distHost = toHost.Length();
-    double desiredR = _baseRadius + _shellOfIndex * _shellSpacing;
-    if (distHost > 1e-3 && distHost < (desiredR - _hostBuffer))
-        accelCmd += (toHost / distHost) * _sepGain;
+    double innerLimit = _hostRadius + _hostBuffer;
+    if (distHost > 1e-3 && distHost < innerLimit)
+    {
+        double t = (innerLimit - distHost) / System.Math.Max(_hostBuffer, 1e-3); // 0..1
+        double sepAccel = _sepGain * t * t; // stronger close to host
+        accelCmd += (toHost / distHost) * sepAccel;
+    }
 
     // Sensor-based separation (optional)
     if (_useSensors && _sensors.Count > 0)
