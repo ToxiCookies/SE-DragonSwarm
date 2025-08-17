@@ -53,6 +53,7 @@ int _index = -1; // satellite index (global)
 bool _debug = false;
 bool _kamikaze = false; // dive into target and detonate
 bool _weaponsEnabled = true; // allow weapon firing
+string _weaponSubsystem = "Any"; // WeaponCore subsystem targeting
 
 // cached blocks
 IMyShipController _controller;
@@ -194,6 +195,8 @@ void ParseIni()
     _controllerName = _ini.Get("Blocks","MainControllerName").ToString(_controllerName);
     _refForward     = _ini.Get("Blocks","ReferenceForward").ToString(_refForward);
     _refUp          = _ini.Get("Blocks","ReferenceUp").ToString(_refUp);
+
+    _weaponSubsystem = _ini.Get("Weapons","TargetSubsystem").ToString(_weaponSubsystem);
 
     // alignment options
     _alignToHost = _ini.Get("Control","AlignToHost").ToBoolean(_alignToHost);
@@ -372,6 +375,8 @@ void DiscoverBlocks()
         }
     }
 
+    ApplyWeaponTargeting();
+
     if (_useSensors)
     {
         _sensorFallback = (_sensors.Count == 0);
@@ -384,6 +389,16 @@ void DiscoverBlocks()
     else
     {
         _sensorFallback = false;
+    }
+}
+
+void ApplyWeaponTargeting()
+{
+    for (int i=0; i<_weapons.Count; i++)
+    {
+        var w = _weapons[i];
+        if (w.GetProperty("WC_TargetSubSystem") != null)
+            w.SetValue<string>("WC_TargetSubSystem", _weaponSubsystem);
     }
 }
 
