@@ -29,6 +29,7 @@ double _kp = 0.6;          // position P gain (to velocity)
 double _ki = 0.0;          // reserved
 double _kd = 1.4;          // velocity gain (to acceleration)
 double _gyroKp = 3.0;      // pointing gain
+double _gyroKd = 1.0;      // damping gain
 double _arrival = 10.0;     // meters: zero-thrust hold inside this
 
 double _minSep = 18.0;     // meters: separation sensing
@@ -50,7 +51,7 @@ string _refUp = string.Empty;      // reserved
 
 int _index = -1; // satellite index (global)
 bool _debug = false;
-bool _kamikaze = false; // dive into host and detonate
+bool _kamikaze = false; // dive into target and detonate
 bool _weaponsEnabled = true; // allow weapon firing
 
 // cached blocks
@@ -62,6 +63,11 @@ readonly System.Collections.Generic.List<IMyWarhead> _warheads = new System.Coll
 readonly System.Collections.Generic.List<IMyJumpDrive> _jumpDrives = new System.Collections.Generic.List<IMyJumpDrive>(4);
 readonly System.Collections.Generic.List<IMyTerminalBlock> _weapons = new System.Collections.Generic.List<IMyTerminalBlock>(32);
 IMyTerminalBlock _trackingTurret;
+IMyRadioAntenna _antenna;
+string _antennaHud = string.Empty;
+bool _kamikazeOnEmpty = false;
+bool _resupplySignaled = false;
+readonly System.Collections.Generic.List<MyInventoryItem> _ammoTmp = new System.Collections.Generic.List<MyInventoryItem>(1);
 
 readonly System.Collections.Generic.HashSet<long> _friendGrids = new System.Collections.Generic.HashSet<long>();
 
@@ -171,6 +177,7 @@ void ParseIni()
     _ki       = _ini.Get("Control","PositionKi").ToDouble(_ki);
     _kd       = _ini.Get("Control","PositionKd").ToDouble(_kd);
     _gyroKp   = _ini.Get("Control","GyroKp").ToDouble(_gyroKp);
+    _gyroKd   = _ini.Get("Control","GyroKd").ToDouble(_gyroKd);
     _arrival  = Math.Max(0.1, _ini.Get("Control","ArrivalTolerance").ToDouble(_arrival));
 
     _minSep     = Math.Max(0.1, _ini.Get("Avoidance","MinSeparation").ToDouble(_minSep));
@@ -285,6 +292,13 @@ void DiscoverBlocks()
 
         var w = b as IMyWarhead;
         if (w != null) { _warheads.Add(w); continue; }
+
+        var ant = b as IMyRadioAntenna;
+        if (ant != null)
+        {
+            if (_antenna == null) { _antenna = ant; _antennaHud = ant.HudText; }
+            continue;
+        }
 
         var gun = b as IMyUserControllableGun;
         if (gun != null)
@@ -438,6 +452,14 @@ public void Main(string argument, UpdateType updateSource)
         {
             IGC.SendBroadcastMessage(_cmdTag, "CMD|KAMIKAZE|", TransmissionDistance.TransmissionDistanceMax);
         }
+        else if (argument == "kamikazeempty" && _role == Role.Host)
+        {
+            IGC.SendBroadcastMessage(_cmdTag, "CMD|KAMEMPTY|1|", TransmissionDistance.TransmissionDistanceMax);
+        }
+        else if (argument == "resupply" && _role == Role.Host)
+        {
+            IGC.SendBroadcastMessage(_cmdTag, "CMD|KAMEMPTY|0|", TransmissionDistance.TransmissionDistanceMax);
+        }
         else if (argument == "ceasefire" && _role == Role.Host)
         {
             IGC.SendBroadcastMessage(_cmdTag, "CMD|CEASEFIRE|", TransmissionDistance.TransmissionDistanceMax);
@@ -503,6 +525,7 @@ public void Main(string argument, UpdateType updateSource)
 
 void WeaponStep()
 {
+    if (_role == Role.Satellite) MonitorAmmo();
     if (!_weaponsEnabled)
     {
         CeaseFire();
@@ -513,6 +536,7 @@ void WeaponStep()
     long targetId = 0;
     double targetDist = double.MaxValue;
     bool hasTarget = false;
+    Vector3D targetPos = Vector3D.Zero;
 
     var vt = _trackingTurret as IMyLargeTurretBase;
     if (vt != null)
@@ -522,7 +546,8 @@ void WeaponStep()
         {
             hasTarget = true;
             targetId = info.EntityId;
-            targetDist = Vector3D.Distance(info.Position, vt.GetPosition());
+            targetPos = info.Position;
+            targetDist = Vector3D.Distance(targetPos, vt.GetPosition());
         }
     }
     else
@@ -535,8 +560,8 @@ void WeaponStep()
                 hasTarget = true;
                 if (_trackingTurret.GetProperty("WC_TargetPosition") != null)
                 {
-                    Vector3D tpos = _trackingTurret.GetValue<Vector3D>("WC_TargetPosition");
-                    targetDist = Vector3D.Distance(tpos, _trackingTurret.GetPosition());
+                    targetPos = _trackingTurret.GetValue<Vector3D>("WC_TargetPosition");
+                    targetDist = Vector3D.Distance(targetPos, _trackingTurret.GetPosition());
                 }
             }
         }
@@ -544,17 +569,32 @@ void WeaponStep()
 
     bool friendly = _friendGrids.Contains(targetId);
     if (hasTarget && targetDist <= 12000.0 && !friendly)
-        FireWeapons(targetId);
+        FireWeapons(targetId, targetPos);
     else
         CeaseFire();
 }
 
-void FireWeapons(long id)
+void FireWeapons(long id, Vector3D tpos)
 {
+    const double ALIGN_COS = 0.98; // ~11 deg
     for (int i=0; i<_weapons.Count; i++)
     {
         var w = _weapons[i];
-        w.ApplyAction("Shoot_On");
+        bool canShoot = true;
+        var turret = w as IMyLargeTurretBase;
+        if (turret == null)
+        {
+            Vector3D toTarget = tpos - w.WorldMatrix.Translation;
+            if (toTarget.LengthSquared() > 1e-3)
+            {
+                double dot = Vector3D.Dot(w.WorldMatrix.Forward, Vector3D.Normalize(toTarget));
+                if (dot < ALIGN_COS) canShoot = false;
+            }
+        }
+        if (canShoot)
+            w.ApplyAction("Shoot_On");
+        else
+            w.ApplyAction("Shoot_Off");
         if (w.GetProperty("WC_TargetLock") != null)
             w.SetValue<long>("WC_TargetLock", id);
     }
@@ -568,6 +608,49 @@ void CeaseFire()
         w.ApplyAction("Shoot_Off");
         if (w.GetProperty("WC_TargetLock") != null)
             w.SetValue<long>("WC_TargetLock", 0L);
+    }
+}
+
+void MonitorAmmo()
+{
+    if (_weapons.Count == 0) return;
+    bool hasAmmo = false;
+    for (int i=0; i<_weapons.Count; i++)
+    {
+        var gun = _weapons[i];
+        if (gun == null || gun.InventoryCount == 0) continue;
+        var inv = gun.GetInventory(0);
+        _ammoTmp.Clear();
+        inv.GetItems(_ammoTmp);
+        if (_ammoTmp.Count > 0) { hasAmmo = true; break; }
+    }
+    if (!hasAmmo)
+    {
+        if (_kamikazeOnEmpty)
+        {
+            if (!_kamikaze)
+            {
+                _kamikaze = true;
+                for (int i=0; i<_warheads.Count; i++)
+                {
+                    var w = _warheads[i];
+                    if (w != null) w.IsArmed = true;
+                }
+            }
+        }
+        else if (_antenna != null && !_resupplySignaled)
+        {
+            _antenna.HudText = "Needs Resupply";
+            _resupplySignaled = true;
+        }
+    }
+    else
+    {
+        if (_resupplySignaled && _antenna != null)
+        {
+            _antenna.HudText = _antennaHud;
+            _resupplySignaled = false;
+        }
     }
 }
 
@@ -670,6 +753,16 @@ void SatStep()
                             if (w != null) w.IsArmed = true;
                         }
                     }
+                    else if (parts[1] == "KAMEMPTY")
+                    {
+                        bool enable = parts.Length > 2 && parts[2] == "1";
+                        _kamikazeOnEmpty = enable;
+                        if (!enable && _antenna != null)
+                        {
+                            _antenna.HudText = _antennaHud;
+                            _resupplySignaled = false;
+                        }
+                    }
                     else if (parts[1] == "CEASEFIRE")
                     {
                         _weaponsEnabled = false;
@@ -691,8 +784,8 @@ void SatStep()
         return;
     }
 
-    // Control step ~2 Hz (every 3rd Update10 tick)
-    if ((_tick % 3) == 0) ControlStep();
+    // Control step ~6 Hz (every Update10 tick)
+    ControlStep();
 
     // Status ~0.5 Hz (every 12th Update10 tick)
     if ((_tick % 12) == 0) SendStatus();
@@ -860,20 +953,52 @@ void ControlStep()
     ApplyGyros(steer);
 }
 
+bool TryGetKamikazeTarget(out Vector3D pos)
+{
+    pos = Vector3D.Zero;
+    if (_trackingTurret == null) return false;
+    long tid = 0;
+    Vector3D tpos = Vector3D.Zero;
+    var vt = _trackingTurret as IMyLargeTurretBase;
+    if (vt != null)
+    {
+        var info = vt.GetTargetedEntity();
+        if (!info.IsEmpty())
+        {
+            tid = info.EntityId;
+            tpos = info.Position;
+        }
+    }
+    else if (_trackingTurret.GetProperty("WC_TargetLock") != null)
+    {
+        tid = _trackingTurret.GetValue<long>("WC_TargetLock");
+        if (tid != 0 && _trackingTurret.GetProperty("WC_TargetPosition") != null)
+            tpos = _trackingTurret.GetValue<Vector3D>("WC_TargetPosition");
+    }
+    if (tid != 0 && !_friendGrids.Contains(tid))
+    {
+        pos = tpos;
+        return true;
+    }
+    return false;
+}
+
 void KamikazeStep()
 {
+    Vector3D targetPos;
+    if (!TryGetKamikazeTarget(out targetPos)) return;
     Vector3D myPos = _controller.GetPosition();
-    Vector3D toHost = _hostPos - myPos;
-    double dist = toHost.Length();
+    Vector3D toTarget = targetPos - myPos;
+    double dist = toTarget.Length();
     if (dist > 1e-3)
     {
-        Vector3D dir = toHost / dist;
+        Vector3D dir = toTarget / dist;
         MatrixD grid = Me.CubeGrid.WorldMatrix;
         Vector3D local = Vector3D.TransformNormal(dir, MatrixD.Transpose(grid));
         FullThrustAxis(_axisX, local.X);
         FullThrustAxis(_axisY, local.Y);
         FullThrustAxis(_axisZ, local.Z);
-        ApplyGyros(toHost);
+        ApplyGyros(toTarget);
     }
 
     if (dist < 25.0)
@@ -959,7 +1084,7 @@ void FullThrustAxis(ThrusterAxis axis, double dir)
 
 void ApplyGyros(Vector3D desiredWorld)
 {
-    if (desiredWorld.LengthSquared() < 1e-8) return;
+    if (_controller == null || desiredWorld.LengthSquared() < 1e-8) return;
 
     Vector3D fwd = _controller.WorldMatrix.Forward;
     Vector3D targetDir = Vector3D.Normalize(desiredWorld);
@@ -973,9 +1098,17 @@ void ApplyGyros(Vector3D desiredWorld)
     double angle = System.Math.Asin(System.Math.Min(1.0, System.Math.Max(-1.0, sinAngle)));
     Vector3D rotVec = axis * (angle * _gyroKp);
 
-    // To ship local, then to each gyro local
+    // To ship local and apply damping
     MatrixD invShip = MatrixD.Transpose(_controller.WorldMatrix);
     Vector3D localRot = Vector3D.TransformNormal(rotVec, invShip);
+    Vector3D angVel = _controller.GetShipVelocities().AngularVelocity;
+    Vector3D localAng = Vector3D.TransformNormal(angVel, invShip);
+    localRot -= localAng * _gyroKd;
+
+    // Modest clamp
+    if (localRot.X > 2) localRot.X = 2; if (localRot.X < -2) localRot.X = -2;
+    if (localRot.Y > 2) localRot.Y = 2; if (localRot.Y < -2) localRot.Y = -2;
+    if (localRot.Z > 2) localRot.Z = 2; if (localRot.Z < -2) localRot.Z = -2;
 
     for (int i=0; i<_gyros.Count; i++)
     {
