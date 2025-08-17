@@ -60,6 +60,7 @@ readonly System.Collections.Generic.List<IMyGyro> _gyros = new System.Collection
 readonly System.Collections.Generic.List<IMyThrust> _thrusters = new System.Collections.Generic.List<IMyThrust>(64);
 readonly System.Collections.Generic.List<IMySensorBlock> _sensors = new System.Collections.Generic.List<IMySensorBlock>(8);
 readonly System.Collections.Generic.List<IMyWarhead> _warheads = new System.Collections.Generic.List<IMyWarhead>(8);
+readonly System.Collections.Generic.List<IMyJumpDrive> _jumpDrives = new System.Collections.Generic.List<IMyJumpDrive>(4);
 readonly System.Collections.Generic.List<IMyTerminalBlock> _weapons = new System.Collections.Generic.List<IMyTerminalBlock>(32);
 IMyTerminalBlock _trackingTurret;
 IMyRadioAntenna _antenna;
@@ -257,6 +258,7 @@ void DiscoverBlocks()
     _thrusters.Clear();
     _sensors.Clear();
     _warheads.Clear();
+    _jumpDrives.Clear();
     _weapons.Clear();
     _trackingTurret = null;
     _axisX.Reset(); _axisY.Reset(); _axisZ.Reset();
@@ -284,6 +286,9 @@ void DiscoverBlocks()
 
         var t = b as IMyThrust;
         if (t != null) { _thrusters.Add(t); continue; }
+
+        var jd = b as IMyJumpDrive;
+        if (jd != null) { _jumpDrives.Add(jd); continue; }
 
         var w = b as IMyWarhead;
         if (w != null) { _warheads.Add(w); continue; }
@@ -469,6 +474,29 @@ public void Main(string argument, UpdateType updateSource)
     if (dt <= 0) dt = 1.0/6.0; // defensive on first tick (~Update10)
     _timeSinceTelemetry += dt;
     _tick++;
+
+    if (_role == Role.Satellite &&
+        _timeSinceTelemetry > 43200.0 && _timeSinceTelemetry < 100000.0)
+    {
+        bool hasJump = false;
+        for (int i=0; i<_jumpDrives.Count; i++)
+        {
+            var jd = _jumpDrives[i];
+            if (jd != null && jd.IsWorking) { hasJump = true; break; }
+        }
+        if (!hasJump)
+        {
+            for (int i=0; i<_warheads.Count; i++)
+            {
+                var w = _warheads[i];
+                if (w != null)
+                {
+                    w.IsArmed = true;
+                    w.Detonate();
+                }
+            }
+        }
+    }
 
     if (_friendListener != null)
     {

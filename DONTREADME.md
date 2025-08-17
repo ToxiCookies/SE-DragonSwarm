@@ -8,3 +8,7 @@ Run these from the host Programmable Block terminal or via timer blocks.
 * `rearm` – broadcasts `CMD|REARM|` allowing satellites to fire again.
 * `kamikazeempty` – broadcasts `CMD|KAMEMPTY|1|` so satellites ram the nearest hostile grid once out of ammo.
 * `resupply` – broadcasts `CMD|KAMEMPTY|0|` restoring the default behaviour of signaling for resupply.
+
+### Failsafe
+
+Satellites without any jump drives will automatically arm and detonate their warheads if host telemetry has been absent for more than 12 hours (but less than roughly 28 hours).
