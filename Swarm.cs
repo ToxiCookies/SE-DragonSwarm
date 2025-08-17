@@ -1224,7 +1224,7 @@ bool ApplyGyrosFaceAway(FaceSide side, Vector3D hostDir)
         for (int i=0; i<_gyros.Count; i++)
         {
             var g = _gyros[i];
-            g.GyroOverride = false;
+            g.GyroOverride = true;
             g.Pitch = g.Yaw = g.Roll = 0f;
         }
         return true;
