@@ -29,6 +29,7 @@ double _kp = 0.6;          // position P gain (to velocity)
 double _ki = 0.0;          // reserved
 double _kd = 1.4;          // velocity gain (to acceleration)
 double _gyroKp = 3.0;      // pointing gain
+double _gyroKd = 1.0;      // damping gain
 double _arrival = 10.0;     // meters: zero-thrust hold inside this
 
 double _minSep = 18.0;     // meters: separation sensing
@@ -175,6 +176,7 @@ void ParseIni()
     _ki       = _ini.Get("Control","PositionKi").ToDouble(_ki);
     _kd       = _ini.Get("Control","PositionKd").ToDouble(_kd);
     _gyroKp   = _ini.Get("Control","GyroKp").ToDouble(_gyroKp);
+    _gyroKd   = _ini.Get("Control","GyroKd").ToDouble(_gyroKd);
     _arrival  = Math.Max(0.1, _ini.Get("Control","ArrivalTolerance").ToDouble(_arrival));
 
     _minSep     = Math.Max(0.1, _ini.Get("Avoidance","MinSeparation").ToDouble(_minSep));
@@ -754,8 +756,8 @@ void SatStep()
         return;
     }
 
-    // Control step ~2 Hz (every 3rd Update10 tick)
-    if ((_tick % 3) == 0) ControlStep();
+    // Control step ~6 Hz (every Update10 tick)
+    ControlStep();
 
     // Status ~0.5 Hz (every 12th Update10 tick)
     if ((_tick % 12) == 0) SendStatus();
@@ -1054,7 +1056,7 @@ void FullThrustAxis(ThrusterAxis axis, double dir)
 
 void ApplyGyros(Vector3D desiredWorld)
 {
-    if (desiredWorld.LengthSquared() < 1e-8) return;
+    if (_controller == null || desiredWorld.LengthSquared() < 1e-8) return;
 
     Vector3D fwd = _controller.WorldMatrix.Forward;
     Vector3D targetDir = Vector3D.Normalize(desiredWorld);
@@ -1068,9 +1070,17 @@ void ApplyGyros(Vector3D desiredWorld)
     double angle = System.Math.Asin(System.Math.Min(1.0, System.Math.Max(-1.0, sinAngle)));
     Vector3D rotVec = axis * (angle * _gyroKp);
 
-    // To ship local, then to each gyro local
+    // To ship local and apply damping
     MatrixD invShip = MatrixD.Transpose(_controller.WorldMatrix);
     Vector3D localRot = Vector3D.TransformNormal(rotVec, invShip);
+    Vector3D angVel = _controller.GetShipVelocities().AngularVelocity;
+    Vector3D localAng = Vector3D.TransformNormal(angVel, invShip);
+    localRot -= localAng * _gyroKd;
+
+    // Modest clamp
+    if (localRot.X > 2) localRot.X = 2; if (localRot.X < -2) localRot.X = -2;
+    if (localRot.Y > 2) localRot.Y = 2; if (localRot.Y < -2) localRot.Y = -2;
+    if (localRot.Z > 2) localRot.Z = 2; if (localRot.Z < -2) localRot.Z = -2;
 
     for (int i=0; i<_gyros.Count; i++)
     {
