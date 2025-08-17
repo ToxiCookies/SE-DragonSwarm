@@ -485,6 +485,7 @@ void WeaponStep()
     long targetId = 0;
     double targetDist = double.MaxValue;
     bool hasTarget = false;
+    Vector3D targetPos = Vector3D.Zero;
 
     var vt = _trackingTurret as IMyLargeTurretBase;
     if (vt != null)
@@ -494,7 +495,8 @@ void WeaponStep()
         {
             hasTarget = true;
             targetId = info.EntityId;
-            targetDist = Vector3D.Distance(info.Position, vt.GetPosition());
+            targetPos = info.Position;
+            targetDist = Vector3D.Distance(targetPos, vt.GetPosition());
         }
     }
     else
@@ -507,8 +509,8 @@ void WeaponStep()
                 hasTarget = true;
                 if (_trackingTurret.GetProperty("WC_TargetPosition") != null)
                 {
-                    Vector3D tpos = _trackingTurret.GetValue<Vector3D>("WC_TargetPosition");
-                    targetDist = Vector3D.Distance(tpos, _trackingTurret.GetPosition());
+                    targetPos = _trackingTurret.GetValue<Vector3D>("WC_TargetPosition");
+                    targetDist = Vector3D.Distance(targetPos, _trackingTurret.GetPosition());
                 }
             }
         }
@@ -516,17 +518,32 @@ void WeaponStep()
 
     bool friendly = _friendGrids.Contains(targetId);
     if (hasTarget && targetDist <= 12000.0 && !friendly)
-        FireWeapons(targetId);
+        FireWeapons(targetId, targetPos);
     else
         CeaseFire();
 }
 
-void FireWeapons(long id)
+void FireWeapons(long id, Vector3D tpos)
 {
+    const double ALIGN_COS = 0.98; // ~11 deg
     for (int i=0; i<_weapons.Count; i++)
     {
         var w = _weapons[i];
-        w.ApplyAction("Shoot_On");
+        bool canShoot = true;
+        var turret = w as IMyLargeTurretBase;
+        if (turret == null)
+        {
+            Vector3D toTarget = tpos - w.WorldMatrix.Translation;
+            if (toTarget.LengthSquared() > 1e-3)
+            {
+                double dot = Vector3D.Dot(w.WorldMatrix.Forward, Vector3D.Normalize(toTarget));
+                if (dot < ALIGN_COS) canShoot = false;
+            }
+        }
+        if (canShoot)
+            w.ApplyAction("Shoot_On");
+        else
+            w.ApplyAction("Shoot_Off");
         if (w.GetProperty("WC_TargetLock") != null)
             w.SetValue<long>("WC_TargetLock", id);
     }
