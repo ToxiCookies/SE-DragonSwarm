@@ -50,7 +50,7 @@ string _refUp = string.Empty;      // reserved
 
 int _index = -1; // satellite index (global)
 bool _debug = false;
-bool _kamikaze = false; // dive into host and detonate
+bool _kamikaze = false; // dive into target and detonate
 bool _weaponsEnabled = true; // allow weapon firing
 
 // cached blocks
@@ -61,6 +61,11 @@ readonly System.Collections.Generic.List<IMySensorBlock> _sensors = new System.C
 readonly System.Collections.Generic.List<IMyWarhead> _warheads = new System.Collections.Generic.List<IMyWarhead>(8);
 readonly System.Collections.Generic.List<IMyTerminalBlock> _weapons = new System.Collections.Generic.List<IMyTerminalBlock>(32);
 IMyTerminalBlock _trackingTurret;
+IMyRadioAntenna _antenna;
+string _antennaHud = string.Empty;
+bool _kamikazeOnEmpty = false;
+bool _resupplySignaled = false;
+readonly System.Collections.Generic.List<MyInventoryItem> _ammoTmp = new System.Collections.Generic.List<MyInventoryItem>(1);
 
 readonly System.Collections.Generic.HashSet<long> _friendGrids = new System.Collections.Generic.HashSet<long>();
 
@@ -281,6 +286,13 @@ void DiscoverBlocks()
         var w = b as IMyWarhead;
         if (w != null) { _warheads.Add(w); continue; }
 
+        var ant = b as IMyRadioAntenna;
+        if (ant != null)
+        {
+            if (_antenna == null) { _antenna = ant; _antennaHud = ant.HudText; }
+            continue;
+        }
+
         var gun = b as IMyUserControllableGun;
         if (gun != null)
         {
@@ -433,6 +445,14 @@ public void Main(string argument, UpdateType updateSource)
         {
             IGC.SendBroadcastMessage(_cmdTag, "CMD|KAMIKAZE|", TransmissionDistance.TransmissionDistanceMax);
         }
+        else if (argument == "kamikazeempty" && _role == Role.Host)
+        {
+            IGC.SendBroadcastMessage(_cmdTag, "CMD|KAMEMPTY|1|", TransmissionDistance.TransmissionDistanceMax);
+        }
+        else if (argument == "resupply" && _role == Role.Host)
+        {
+            IGC.SendBroadcastMessage(_cmdTag, "CMD|KAMEMPTY|0|", TransmissionDistance.TransmissionDistanceMax);
+        }
         else if (argument == "ceasefire" && _role == Role.Host)
         {
             IGC.SendBroadcastMessage(_cmdTag, "CMD|CEASEFIRE|", TransmissionDistance.TransmissionDistanceMax);
@@ -475,6 +495,7 @@ public void Main(string argument, UpdateType updateSource)
 
 void WeaponStep()
 {
+    if (_role == Role.Satellite) MonitorAmmo();
     if (!_weaponsEnabled)
     {
         CeaseFire();
@@ -540,6 +561,49 @@ void CeaseFire()
         w.ApplyAction("Shoot_Off");
         if (w.GetProperty("WC_TargetLock") != null)
             w.SetValue<long>("WC_TargetLock", 0L);
+    }
+}
+
+void MonitorAmmo()
+{
+    if (_weapons.Count == 0) return;
+    bool hasAmmo = false;
+    for (int i=0; i<_weapons.Count; i++)
+    {
+        var gun = _weapons[i];
+        if (gun == null || gun.InventoryCount == 0) continue;
+        var inv = gun.GetInventory(0);
+        _ammoTmp.Clear();
+        inv.GetItems(_ammoTmp);
+        if (_ammoTmp.Count > 0) { hasAmmo = true; break; }
+    }
+    if (!hasAmmo)
+    {
+        if (_kamikazeOnEmpty)
+        {
+            if (!_kamikaze)
+            {
+                _kamikaze = true;
+                for (int i=0; i<_warheads.Count; i++)
+                {
+                    var w = _warheads[i];
+                    if (w != null) w.IsArmed = true;
+                }
+            }
+        }
+        else if (_antenna != null && !_resupplySignaled)
+        {
+            _antenna.HudText = "Needs Resupply";
+            _resupplySignaled = true;
+        }
+    }
+    else
+    {
+        if (_resupplySignaled && _antenna != null)
+        {
+            _antenna.HudText = _antennaHud;
+            _resupplySignaled = false;
+        }
     }
 }
 
@@ -640,6 +704,16 @@ void SatStep()
                         {
                             var w = _warheads[i];
                             if (w != null) w.IsArmed = true;
+                        }
+                    }
+                    else if (parts[1] == "KAMEMPTY")
+                    {
+                        bool enable = parts.Length > 2 && parts[2] == "1";
+                        _kamikazeOnEmpty = enable;
+                        if (!enable && _antenna != null)
+                        {
+                            _antenna.HudText = _antennaHud;
+                            _resupplySignaled = false;
                         }
                     }
                     else if (parts[1] == "CEASEFIRE")
@@ -832,20 +906,52 @@ void ControlStep()
     ApplyGyros(steer);
 }
 
+bool TryGetKamikazeTarget(out Vector3D pos)
+{
+    pos = Vector3D.Zero;
+    if (_trackingTurret == null) return false;
+    long tid = 0;
+    Vector3D tpos = Vector3D.Zero;
+    var vt = _trackingTurret as IMyLargeTurretBase;
+    if (vt != null)
+    {
+        var info = vt.GetTargetedEntity();
+        if (!info.IsEmpty())
+        {
+            tid = info.EntityId;
+            tpos = info.Position;
+        }
+    }
+    else if (_trackingTurret.GetProperty("WC_TargetLock") != null)
+    {
+        tid = _trackingTurret.GetValue<long>("WC_TargetLock");
+        if (tid != 0 && _trackingTurret.GetProperty("WC_TargetPosition") != null)
+            tpos = _trackingTurret.GetValue<Vector3D>("WC_TargetPosition");
+    }
+    if (tid != 0 && !_friendGrids.Contains(tid))
+    {
+        pos = tpos;
+        return true;
+    }
+    return false;
+}
+
 void KamikazeStep()
 {
+    Vector3D targetPos;
+    if (!TryGetKamikazeTarget(out targetPos)) return;
     Vector3D myPos = _controller.GetPosition();
-    Vector3D toHost = _hostPos - myPos;
-    double dist = toHost.Length();
+    Vector3D toTarget = targetPos - myPos;
+    double dist = toTarget.Length();
     if (dist > 1e-3)
     {
-        Vector3D dir = toHost / dist;
+        Vector3D dir = toTarget / dist;
         MatrixD grid = Me.CubeGrid.WorldMatrix;
         Vector3D local = Vector3D.TransformNormal(dir, MatrixD.Transpose(grid));
         FullThrustAxis(_axisX, local.X);
         FullThrustAxis(_axisY, local.Y);
         FullThrustAxis(_axisZ, local.Z);
-        ApplyGyros(toHost);
+        ApplyGyros(toTarget);
     }
 
     if (dist < 25.0)
