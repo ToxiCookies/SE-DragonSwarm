@@ -1,4 +1,10 @@
-## DragonSwarm Commands
+## DragonSwarm
+
+An autonomous, host-and-swarm program running from a single script. Satellites fall into designated orbit slots, arranged in concentric shells
+Drop the respective .ini files into the custom data field, and recompile.
+Very customizable., just edit the .inis
+
+### Commands
 
 Run these from the host Programmable Block terminal or via timer blocks.
 
