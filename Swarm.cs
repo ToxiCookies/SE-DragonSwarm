@@ -60,11 +60,9 @@ readonly System.Collections.Generic.List<IMyGyro> _gyros = new System.Collection
 readonly System.Collections.Generic.List<IMyThrust> _thrusters = new System.Collections.Generic.List<IMyThrust>(64);
 readonly System.Collections.Generic.List<IMySensorBlock> _sensors = new System.Collections.Generic.List<IMySensorBlock>(8);
 readonly System.Collections.Generic.List<IMyWarhead> _warheads = new System.Collections.Generic.List<IMyWarhead>(8);
-readonly System.Collections.Generic.List<IMyJumpDrive> _jumpDrives = new System.Collections.Generic.List<IMyJumpDrive>(4);
+readonly System.Collections.Generic.List<IMyJumpDrive> _jumpDrives = new System.Collections.Generic.List<IMyJumpDrive>(8);
 readonly System.Collections.Generic.List<IMyTerminalBlock> _weapons = new System.Collections.Generic.List<IMyTerminalBlock>(32);
 IMyTerminalBlock _trackingTurret;
-
-readonly System.Collections.Generic.List<IMyJumpDrive> _jumpDrives = new System.Collections.Generic.List<IMyJumpDrive>(8);
 Vector3D _jumpTarget;
 double _jumpDelay = -1.0; // seconds until executing a received jump
 
@@ -105,6 +103,7 @@ MatrixD _hostMatrix = MatrixD.Identity;
 int _hostTick;
 
 double _timeSinceTelemetry = 1e6; // seconds
+double _dt = 1.0/6.0; // last timestep in seconds
 
 // mass cache
 double _shipMass = 0;
@@ -264,7 +263,6 @@ void DiscoverBlocks()
     _thrusters.Clear();
     _sensors.Clear();
     _warheads.Clear();
-    _jumpDrives.Clear();
     _weapons.Clear();
     _trackingTurret = null;
     _jumpDrives.Clear();
@@ -489,9 +487,9 @@ public void Main(string argument, UpdateType updateSource)
         }
     }
 
-    double dt = Runtime.TimeSinceLastRun.TotalSeconds;
-    if (dt <= 0) dt = 1.0/6.0; // defensive on first tick (~Update10)
-    _timeSinceTelemetry += dt;
+    _dt = Runtime.TimeSinceLastRun.TotalSeconds;
+    if (_dt <= 0) _dt = 1.0/6.0; // defensive on first tick (~Update10)
+    _timeSinceTelemetry += _dt;
     _tick++;
 
     if (_role == Role.Satellite &&
@@ -808,7 +806,7 @@ void SatStep()
 
     if (_jumpDelay >= 0.0)
     {
-        _jumpDelay -= dt;
+        _jumpDelay -= _dt;
         if (_jumpDelay <= 0.0)
         {
             for (int i=0; i<_jumpDrives.Count; i++)
