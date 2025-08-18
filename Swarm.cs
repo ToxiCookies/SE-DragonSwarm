@@ -54,6 +54,7 @@ bool _debug = false;
 bool _kamikaze = false; // dive into target and detonate
 bool _weaponsEnabled = true; // allow weapon firing
 string _weaponSubsystem = "Any"; // WeaponCore subsystem targeting
+double _shieldDisableRange = 50000.0; // meters: shields off beyond this enemy distance
 
 // cached blocks
 IMyShipController _controller;
@@ -63,6 +64,8 @@ readonly System.Collections.Generic.List<IMySensorBlock> _sensors = new System.C
 readonly System.Collections.Generic.List<IMyWarhead> _warheads = new System.Collections.Generic.List<IMyWarhead>(8);
 readonly System.Collections.Generic.List<IMyJumpDrive> _jumpDrives = new System.Collections.Generic.List<IMyJumpDrive>(8);
 readonly System.Collections.Generic.List<IMyTerminalBlock> _weapons = new System.Collections.Generic.List<IMyTerminalBlock>(32);
+readonly System.Collections.Generic.List<IMyTerminalBlock> _lowPowerWeapons = new System.Collections.Generic.List<IMyTerminalBlock>(32);
+readonly System.Collections.Generic.List<IMyFunctionalBlock> _shields = new System.Collections.Generic.List<IMyFunctionalBlock>(4);
 IMyTerminalBlock _trackingTurret;
 Vector3D _jumpTarget;
 double _jumpDelay = -1.0; // seconds until executing a received jump
@@ -267,9 +270,14 @@ void DiscoverBlocks()
     _sensors.Clear();
     _warheads.Clear();
     _weapons.Clear();
+    _lowPowerWeapons.Clear();
+    _shields.Clear();
     _trackingTurret = null;
     _jumpDrives.Clear();
     _axisX.Reset(); _axisY.Reset(); _axisZ.Reset();
+
+    _friendGrids.Clear();
+    _friendGrids.Add(Me.CubeGrid.EntityId);
 
     var tmp = new System.Collections.Generic.List<IMyTerminalBlock>(128);
     GridTerminalSystem.GetBlocks(tmp);
@@ -277,6 +285,18 @@ void DiscoverBlocks()
     {
         var b = tmp[i];
         if (b.CubeGrid != Me.CubeGrid) continue;
+
+        var shield = b as IMyFunctionalBlock;
+        if (shield != null)
+        {
+            string disp = shield.DefinitionDisplayNameText;
+            if (!string.IsNullOrEmpty(disp) &&
+                disp.IndexOf("Shield", System.StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                _shields.Add(shield);
+                continue;
+            }
+        }
 
         var sc = b as IMyShipController;
         if (sc != null)
@@ -312,6 +332,7 @@ void DiscoverBlocks()
         if (gun != null)
         {
             _weapons.Add(gun);
+            CategorizeWeapon(gun);
             if (_trackingTurret == null)
             {
                 var lt = gun as IMyLargeTurretBase;
@@ -323,6 +344,7 @@ void DiscoverBlocks()
         if (b.GetActionWithName("Shoot_On") != null && b.GetActionWithName("Shoot_Off") != null)
         {
             _weapons.Add(b);
+            CategorizeWeapon(b);
             if (_trackingTurret == null && b.GetProperty("WC_TargetLock") != null)
                 _trackingTurret = b;
             continue;
@@ -555,20 +577,57 @@ public void Main(string argument, UpdateType updateSource)
 
 #region Weapons
 
+void CategorizeWeapon(IMyTerminalBlock w)
+{
+    string disp = w.DefinitionDisplayNameText;
+    if (!string.IsNullOrEmpty(disp))
+    {
+        if (disp.IndexOf("Gatling", System.StringComparison.OrdinalIgnoreCase) >= 0 ||
+            disp.IndexOf("Autocannon", System.StringComparison.OrdinalIgnoreCase) >= 0 ||
+            disp.IndexOf("Machine Gun", System.StringComparison.OrdinalIgnoreCase) >= 0)
+            _lowPowerWeapons.Add(w);
+    }
+}
+
 void WeaponStep()
 {
     if (_role == Role.Satellite) MonitorAmmo();
     if (!_weaponsEnabled)
     {
         CeaseFire();
+        UpdateShields(false);
         return;
     }
-    if (_trackingTurret == null || _weapons.Count == 0) return;
+    if (_trackingTurret == null || _weapons.Count == 0)
+    {
+        UpdateShields(false);
+        return;
+    }
 
-    long targetId = 0;
-    double targetDist = double.MaxValue;
+    long targetId; Vector3D targetPos; double targetDist; bool targetSmall;
+    bool hasTarget = TryGetWeaponTarget(out targetId, out targetPos, out targetDist, out targetSmall);
+    bool enemyNearby = hasTarget && targetDist <= _shieldDisableRange;
+
+    UpdateShields(enemyNearby);
+    if (enemyNearby && targetDist <= 12000.0)
+        FireWeapons(targetId, targetPos, targetSmall);
+    else
+        CeaseFire();
+}
+
+bool TryGetWeaponTarget(out long id, out Vector3D pos, out double dist)
+{
+    bool small;
+    return TryGetWeaponTarget(out id, out pos, out dist, out small);
+}
+
+bool TryGetWeaponTarget(out long id, out Vector3D pos, out double dist, out bool smallGrid)
+{
+    id = 0; pos = Vector3D.Zero; dist = double.MaxValue; smallGrid = false;
+    if (_trackingTurret == null) return false;
+
     bool hasTarget = false;
-    Vector3D targetPos = Vector3D.Zero;
+    long targetId = 0; Vector3D targetPos = Vector3D.Zero; double targetDist = double.MaxValue; bool targetSmall = false;
 
     var vt = _trackingTurret as IMyLargeTurretBase;
     if (vt != null)
@@ -580,38 +639,42 @@ void WeaponStep()
             targetId = info.EntityId;
             targetPos = info.Position;
             targetDist = Vector3D.Distance(targetPos, vt.GetPosition());
+            targetSmall = (info.Type == MyDetectedEntityType.SmallGrid);
         }
     }
-    else
+    else if (_trackingTurret.GetProperty("WC_TargetLock") != null)
     {
-        if (_trackingTurret.GetProperty("WC_TargetLock") != null)
+        targetId = _trackingTurret.GetValue<long>("WC_TargetLock");
+        if (targetId != 0)
         {
-            targetId = _trackingTurret.GetValue<long>("WC_TargetLock");
-            if (targetId != 0)
+            hasTarget = true;
+            if (_trackingTurret.GetProperty("WC_TargetPosition") != null)
             {
-                hasTarget = true;
-                if (_trackingTurret.GetProperty("WC_TargetPosition") != null)
-                {
-                    targetPos = _trackingTurret.GetValue<Vector3D>("WC_TargetPosition");
-                    targetDist = Vector3D.Distance(targetPos, _trackingTurret.GetPosition());
-                }
+                targetPos = _trackingTurret.GetValue<Vector3D>("WC_TargetPosition");
+                targetDist = Vector3D.Distance(targetPos, _trackingTurret.GetPosition());
             }
         }
     }
 
-    bool friendly = _friendGrids.Contains(targetId);
-    if (hasTarget && targetDist <= 12000.0 && !friendly)
-        FireWeapons(targetId, targetPos);
-    else
-        CeaseFire();
+    if (!hasTarget || targetId == 0 || _friendGrids.Contains(targetId)) return false;
+    id = targetId; pos = targetPos; dist = targetDist; smallGrid = targetSmall;
+    return true;
 }
 
-void FireWeapons(long id, Vector3D tpos)
+void FireWeapons(long id, Vector3D tpos, bool smallGrid)
 {
     const double ALIGN_COS = 0.98; // ~11 deg
     for (int i=0; i<_weapons.Count; i++)
     {
         var w = _weapons[i];
+        bool isLow = _lowPowerWeapons.Contains(w);
+        if (smallGrid && !isLow)
+        {
+            w.ApplyAction("Shoot_Off");
+            if (w.GetProperty("WC_TargetLock") != null)
+                w.SetValue<long>("WC_TargetLock", 0L);
+            continue;
+        }
         bool canShoot = true;
         var turret = w as IMyLargeTurretBase;
         if (turret == null)
@@ -640,6 +703,22 @@ void CeaseFire()
         w.ApplyAction("Shoot_Off");
         if (w.GetProperty("WC_TargetLock") != null)
             w.SetValue<long>("WC_TargetLock", 0L);
+    }
+}
+
+void UpdateShields(bool enemyNearby)
+{
+    for (int i=0; i<_shields.Count; i++)
+    {
+        var s = _shields[i];
+        if (enemyNearby)
+        {
+            if (!s.Enabled) s.Enabled = true;
+        }
+        else
+        {
+            if (s.Enabled) s.Enabled = false;
+        }
     }
 }
 
@@ -876,6 +955,7 @@ bool ParseTelemetry(string s)
     fwd = Vector3D.Normalize(fwd);
 
     _hostId = hostId;
+    _friendGrids.Add(hostId);
     _hostTick = hostTick;
     _hostPos = pos;
     _hostVel = vel;
@@ -923,21 +1003,30 @@ void ControlStep()
     if (error.LengthSquared() <= (_arrival * _arrival) && relVel.LengthSquared() < 0.25) // ~0.5 m/s
     {
         ZeroThrust();
-        Vector3D fromHost = myPos - _hostPos;
-        switch (_parkingFace)
+        long tid; Vector3D tpos; double tdist;
+        if (TryGetWeaponTarget(out tid, out tpos, out tdist))
         {
-            case FaceSide.Forward:
-            case FaceSide.Backward:
-            case FaceSide.Up:
-            case FaceSide.Down:
-            case FaceSide.Left:
-            case FaceSide.Right:
-                ApplyGyrosFaceAway(_parkingFace, fromHost);
-                break;
-            default:
-                if (_alignToHost) ApplyGyrosAlignToHost();
-                else              ApplyGyrosFaceAway(FaceSide.Backward, fromHost); // face host
-                break;
+            Vector3D toTarget = tpos - myPos;
+            if (toTarget.LengthSquared() > 1e-6) ApplyGyros(toTarget);
+        }
+        else
+        {
+            Vector3D fromHost = myPos - _hostPos;
+            switch (_parkingFace)
+            {
+                case FaceSide.Forward:
+                case FaceSide.Backward:
+                case FaceSide.Up:
+                case FaceSide.Down:
+                case FaceSide.Left:
+                case FaceSide.Right:
+                    ApplyGyrosFaceAway(_parkingFace, fromHost);
+                    break;
+                default:
+                    if (_alignToHost) ApplyGyrosAlignToHost();
+                    else              ApplyGyrosFaceAway(FaceSide.Backward, fromHost); // face host
+                    break;
+            }
         }
         return;
     }
@@ -1008,38 +1097,22 @@ void ControlStep()
     ApplyThrust(_axisY, localAccel.Y);
     ApplyThrust(_axisZ, localAccel.Z);
 
-    // Gyro steering: face accel direction (or toward host if tiny)
+    // Gyro steering: face enemy target if available, otherwise accel/host
     Vector3D steer = (accelCmd.LengthSquared() > 1.0) ? accelCmd : (_hostPos - myPos);
+    long tid; Vector3D tpos; double tdist;
+    if (TryGetWeaponTarget(out tid, out tpos, out tdist))
+    {
+        Vector3D toTarget = tpos - myPos;
+        if (toTarget.LengthSquared() > 1e-6) steer = toTarget;
+    }
     ApplyGyros(steer);
 }
 
 bool TryGetKamikazeTarget(out Vector3D pos)
 {
+    long tid; double dist;
+    if (TryGetWeaponTarget(out tid, out pos, out dist)) return true;
     pos = Vector3D.Zero;
-    if (_trackingTurret == null) return false;
-    long tid = 0;
-    Vector3D tpos = Vector3D.Zero;
-    var vt = _trackingTurret as IMyLargeTurretBase;
-    if (vt != null)
-    {
-        var info = vt.GetTargetedEntity();
-        if (!info.IsEmpty())
-        {
-            tid = info.EntityId;
-            tpos = info.Position;
-        }
-    }
-    else if (_trackingTurret.GetProperty("WC_TargetLock") != null)
-    {
-        tid = _trackingTurret.GetValue<long>("WC_TargetLock");
-        if (tid != 0 && _trackingTurret.GetProperty("WC_TargetPosition") != null)
-            tpos = _trackingTurret.GetValue<Vector3D>("WC_TargetPosition");
-    }
-    if (tid != 0 && !_friendGrids.Contains(tid))
-    {
-        pos = tpos;
-        return true;
-    }
     return false;
 }
 
