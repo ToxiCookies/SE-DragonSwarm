@@ -54,6 +54,7 @@ bool _debug = false;
 bool _kamikaze = false; // dive into target and detonate
 bool _weaponsEnabled = true; // allow weapon firing
 string _weaponSubsystem = "Any"; // WeaponCore subsystem targeting
+double _shieldDisableRange = 50000.0; // meters: shields off beyond this enemy distance
 
 // cached blocks
 IMyShipController _controller;
@@ -63,6 +64,8 @@ readonly System.Collections.Generic.List<IMySensorBlock> _sensors = new System.C
 readonly System.Collections.Generic.List<IMyWarhead> _warheads = new System.Collections.Generic.List<IMyWarhead>(8);
 readonly System.Collections.Generic.List<IMyJumpDrive> _jumpDrives = new System.Collections.Generic.List<IMyJumpDrive>(8);
 readonly System.Collections.Generic.List<IMyTerminalBlock> _weapons = new System.Collections.Generic.List<IMyTerminalBlock>(32);
+readonly System.Collections.Generic.List<IMyTerminalBlock> _lowPowerWeapons = new System.Collections.Generic.List<IMyTerminalBlock>(32);
+readonly System.Collections.Generic.List<IMyFunctionalBlock> _shields = new System.Collections.Generic.List<IMyFunctionalBlock>(4);
 IMyTerminalBlock _trackingTurret;
 Vector3D _jumpTarget;
 double _jumpDelay = -1.0; // seconds until executing a received jump
@@ -267,6 +270,8 @@ void DiscoverBlocks()
     _sensors.Clear();
     _warheads.Clear();
     _weapons.Clear();
+    _lowPowerWeapons.Clear();
+    _shields.Clear();
     _trackingTurret = null;
     _jumpDrives.Clear();
     _axisX.Reset(); _axisY.Reset(); _axisZ.Reset();
@@ -277,6 +282,18 @@ void DiscoverBlocks()
     {
         var b = tmp[i];
         if (b.CubeGrid != Me.CubeGrid) continue;
+
+        var shield = b as IMyFunctionalBlock;
+        if (shield != null)
+        {
+            string disp = shield.DefinitionDisplayNameText;
+            if (!string.IsNullOrEmpty(disp) &&
+                disp.IndexOf("Shield", System.StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                _shields.Add(shield);
+                continue;
+            }
+        }
 
         var sc = b as IMyShipController;
         if (sc != null)
@@ -312,6 +329,7 @@ void DiscoverBlocks()
         if (gun != null)
         {
             _weapons.Add(gun);
+            CategorizeWeapon(gun);
             if (_trackingTurret == null)
             {
                 var lt = gun as IMyLargeTurretBase;
@@ -323,6 +341,7 @@ void DiscoverBlocks()
         if (b.GetActionWithName("Shoot_On") != null && b.GetActionWithName("Shoot_Off") != null)
         {
             _weapons.Add(b);
+            CategorizeWeapon(b);
             if (_trackingTurret == null && b.GetProperty("WC_TargetLock") != null)
                 _trackingTurret = b;
             continue;
@@ -555,20 +574,38 @@ public void Main(string argument, UpdateType updateSource)
 
 #region Weapons
 
+void CategorizeWeapon(IMyTerminalBlock w)
+{
+    string disp = w.DefinitionDisplayNameText;
+    if (!string.IsNullOrEmpty(disp))
+    {
+        if (disp.IndexOf("Gatling", System.StringComparison.OrdinalIgnoreCase) >= 0 ||
+            disp.IndexOf("Autocannon", System.StringComparison.OrdinalIgnoreCase) >= 0 ||
+            disp.IndexOf("Machine Gun", System.StringComparison.OrdinalIgnoreCase) >= 0)
+            _lowPowerWeapons.Add(w);
+    }
+}
+
 void WeaponStep()
 {
     if (_role == Role.Satellite) MonitorAmmo();
     if (!_weaponsEnabled)
     {
         CeaseFire();
+        UpdateShields(false);
         return;
     }
-    if (_trackingTurret == null || _weapons.Count == 0) return;
+    if (_trackingTurret == null || _weapons.Count == 0)
+    {
+        UpdateShields(false);
+        return;
+    }
 
     long targetId = 0;
     double targetDist = double.MaxValue;
     bool hasTarget = false;
     Vector3D targetPos = Vector3D.Zero;
+    bool targetSmall = false;
 
     var vt = _trackingTurret as IMyLargeTurretBase;
     if (vt != null)
@@ -580,6 +617,7 @@ void WeaponStep()
             targetId = info.EntityId;
             targetPos = info.Position;
             targetDist = Vector3D.Distance(targetPos, vt.GetPosition());
+            targetSmall = (info.Type == MyDetectedEntityType.SmallGrid);
         }
     }
     else
@@ -600,18 +638,28 @@ void WeaponStep()
     }
 
     bool friendly = _friendGrids.Contains(targetId);
-    if (hasTarget && targetDist <= 12000.0 && !friendly)
-        FireWeapons(targetId, targetPos);
+    bool enemyNearby = hasTarget && targetDist <= _shieldDisableRange && !friendly;
+    UpdateShields(enemyNearby);
+    if (enemyNearby && targetDist <= 12000.0)
+        FireWeapons(targetId, targetPos, targetSmall);
     else
         CeaseFire();
 }
 
-void FireWeapons(long id, Vector3D tpos)
+void FireWeapons(long id, Vector3D tpos, bool smallGrid)
 {
     const double ALIGN_COS = 0.98; // ~11 deg
     for (int i=0; i<_weapons.Count; i++)
     {
         var w = _weapons[i];
+        bool isLow = _lowPowerWeapons.Contains(w);
+        if (smallGrid && !isLow)
+        {
+            w.ApplyAction("Shoot_Off");
+            if (w.GetProperty("WC_TargetLock") != null)
+                w.SetValue<long>("WC_TargetLock", 0L);
+            continue;
+        }
         bool canShoot = true;
         var turret = w as IMyLargeTurretBase;
         if (turret == null)
@@ -640,6 +688,22 @@ void CeaseFire()
         w.ApplyAction("Shoot_Off");
         if (w.GetProperty("WC_TargetLock") != null)
             w.SetValue<long>("WC_TargetLock", 0L);
+    }
+}
+
+void UpdateShields(bool enemyNearby)
+{
+    for (int i=0; i<_shields.Count; i++)
+    {
+        var s = _shields[i];
+        if (enemyNearby)
+        {
+            if (!s.Enabled) s.Enabled = true;
+        }
+        else
+        {
+            if (s.Enabled) s.Enabled = false;
+        }
     }
 }
 
