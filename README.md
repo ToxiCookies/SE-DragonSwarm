@@ -4,6 +4,9 @@ An autonomous, host-and-swarm program running from a single script. Satellites f
 Drop the respective .ini files into the custom data field, and recompile.
 Very customizable., just edit the .inis
 
+Friendly grid IDs are shared over an IGC tag. By default this tag is `<FormationGroup>.FRIEND`, but it can be changed via the `FriendTag` setting in the `[IDs]` section of the custom data.
+Satellites wait for resupply when out of ammunition and will only broadcast a resupply request if they lack any energy weapons. Set `KamikazeOnEmpty=true` in the `[Weapons]` section to force kamikaze runs instead.
+
 ### Commands
 
 Run these from the host Programmable Block terminal or via timer blocks.

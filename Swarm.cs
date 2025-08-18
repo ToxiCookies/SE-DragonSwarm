@@ -91,7 +91,7 @@ IMyBroadcastListener _friendListener; // friend grid IDs
 string _hostTag;
 string _statusTag;
 string _cmdTag;
-string _friendTag;
+string _friendTag; // IGC tag used to share friendly grid IDs (defaults to FormationGroup.FRIEND)
 
 // runtime
 int _tick = 0;
@@ -174,6 +174,8 @@ void ParseIni()
     _role = roleStr == "Satellite" ? Role.Satellite : Role.Host;
 
     _formationGroup = _ini.Get("IDs","FormationGroup").ToString(_formationGroup);
+    string friend = _ini.Get("IDs","FriendTag").ToString(null);
+    _friendTag = string.IsNullOrWhiteSpace(friend) ? _formationGroup + ".FRIEND" : friend;
     string idxStr = _ini.Get("IDs","Index").ToString("auto");
 
     _shellCount     = Math.Max(1, _ini.Get("Formation","ShellCount").ToInt32(_shellCount));
@@ -200,6 +202,7 @@ void ParseIni()
     _refUp          = _ini.Get("Blocks","ReferenceUp").ToString(_refUp);
 
     _weaponSubsystem = _ini.Get("Weapons","TargetSubsystem").ToString(_weaponSubsystem);
+    _kamikazeOnEmpty = _ini.Get("Weapons","KamikazeOnEmpty").ToBoolean(_kamikazeOnEmpty);
 
     // alignment options
     _alignToHost = _ini.Get("Control","AlignToHost").ToBoolean(_alignToHost);
@@ -430,7 +433,6 @@ void SetupIGC()
     _hostTag   = _formationGroup + ".HOST.TELEMETRY";
     _statusTag = _formationGroup + ".SAT.STATUS";
     _cmdTag    = _formationGroup + ".CMD";
-    _friendTag = _formationGroup + ".FRIEND";
 
     _hostListener   = null;
     _statusListener = null;
@@ -452,6 +454,16 @@ void SetupIGC()
 
     _friendListener = IGC.RegisterBroadcastListener(_friendTag);
     _friendListener.SetMessageCallback(_friendTag);
+
+    BroadcastFriendId();
+}
+
+void BroadcastFriendId()
+{
+    long myId = Me.CubeGrid.EntityId;
+    if (!_friendGrids.Contains(myId))
+        _friendGrids.Add(myId);
+    IGC.SendBroadcastMessage(_friendTag, myId.ToString(), TransmissionDistance.TransmissionDistanceMax);
 }
 
 #endregion
@@ -526,6 +538,9 @@ public void Main(string argument, UpdateType updateSource)
     _timeSinceTelemetry += _dt;
     _tick++;
 
+    if ((_tick % 60) == 0)
+        BroadcastFriendId();
+
     if (_role == Role.Satellite &&
         _timeSinceTelemetry > 43200.0 && _timeSinceTelemetry < 100000.0)
     {
@@ -586,6 +601,37 @@ void CategorizeWeapon(IMyTerminalBlock w)
     }
 }
 
+bool TryGetTarget(out long id, out Vector3D pos, out bool smallGrid)
+{
+    id = 0; pos = Vector3D.Zero; smallGrid = false;
+    if (_trackingTurret == null) return false;
+
+    var vt = _trackingTurret as IMyLargeTurretBase;
+    if (vt != null)
+    {
+        var info = vt.GetTargetedEntity();
+        if (!info.IsEmpty())
+        {
+            if (_friendGrids.Contains(info.EntityId)) return false;
+            id = info.EntityId;
+            pos = info.Position;
+            smallGrid = (info.Type == MyDetectedEntityType.SmallGrid);
+            return true;
+        }
+    }
+    else if (_trackingTurret.GetProperty("WC_TargetLock") != null)
+    {
+        id = _trackingTurret.GetValue<long>("WC_TargetLock");
+        if (id != 0 && !_friendGrids.Contains(id))
+        {
+            if (_trackingTurret.GetProperty("WC_TargetPosition") != null)
+                pos = _trackingTurret.GetValue<Vector3D>("WC_TargetPosition");
+            return true;
+        }
+    }
+    return false;
+}
+
 void WeaponStep()
 {
     if (_role == Role.Satellite) MonitorAmmo();
@@ -595,55 +641,28 @@ void WeaponStep()
         UpdateShields(false);
         return;
     }
-    if (_trackingTurret == null || _weapons.Count == 0)
+    if (_trackingTurret == null || _weapons.Count == 0 || _controller == null)
     {
         UpdateShields(false);
         return;
     }
+    long targetId;
+    Vector3D targetPos;
+    bool targetSmall;
+    bool hasTarget = TryGetTarget(out targetId, out targetPos, out targetSmall);
+    double targetDist = hasTarget ? Vector3D.Distance(targetPos, _trackingTurret.GetPosition()) : double.MaxValue;
 
-    long targetId = 0;
-    double targetDist = double.MaxValue;
-    bool hasTarget = false;
-    Vector3D targetPos = Vector3D.Zero;
-    bool targetSmall = false;
-
-    var vt = _trackingTurret as IMyLargeTurretBase;
-    if (vt != null)
-    {
-        var info = vt.GetTargetedEntity();
-        if (!info.IsEmpty())
-        {
-            hasTarget = true;
-            targetId = info.EntityId;
-            targetPos = info.Position;
-            targetDist = Vector3D.Distance(targetPos, vt.GetPosition());
-            targetSmall = (info.Type == MyDetectedEntityType.SmallGrid);
-        }
-    }
-    else
-    {
-        if (_trackingTurret.GetProperty("WC_TargetLock") != null)
-        {
-            targetId = _trackingTurret.GetValue<long>("WC_TargetLock");
-            if (targetId != 0)
-            {
-                hasTarget = true;
-                if (_trackingTurret.GetProperty("WC_TargetPosition") != null)
-                {
-                    targetPos = _trackingTurret.GetValue<Vector3D>("WC_TargetPosition");
-                    targetDist = Vector3D.Distance(targetPos, _trackingTurret.GetPosition());
-                }
-            }
-        }
-    }
-
-    bool friendly = _friendGrids.Contains(targetId);
-    bool enemyNearby = hasTarget && targetDist <= _shieldDisableRange && !friendly;
+    bool enemyNearby = hasTarget && targetDist <= _shieldDisableRange;
     UpdateShields(enemyNearby);
     if (enemyNearby && targetDist <= 12000.0)
+    {
+        ApplyGyros(targetPos - _controller.GetPosition());
         FireWeapons(targetId, targetPos, targetSmall);
+    }
     else
+    {
         CeaseFire();
+    }
 }
 
 void FireWeapons(long id, Vector3D tpos, bool smallGrid)
@@ -711,16 +730,24 @@ void MonitorAmmo()
 {
     if (_weapons.Count == 0) return;
     bool hasAmmo = false;
+    bool hasAmmoWeapon = false;
+    bool hasEnergyWeapon = false;
     for (int i=0; i<_weapons.Count; i++)
     {
         var gun = _weapons[i];
-        if (gun == null || gun.InventoryCount == 0) continue;
+        if (gun == null) continue;
+        if (gun.InventoryCount == 0)
+        {
+            hasEnergyWeapon = true;
+            continue;
+        }
+        hasAmmoWeapon = true;
         var inv = gun.GetInventory(0);
         _ammoTmp.Clear();
         inv.GetItems(_ammoTmp);
         if (_ammoTmp.Count > 0) { hasAmmo = true; break; }
     }
-    if (!hasAmmo)
+    if (!hasAmmo && hasAmmoWeapon && !hasEnergyWeapon)
     {
         if (_kamikazeOnEmpty)
         {
@@ -767,7 +794,17 @@ void HostStep()
         while (_statusListener.HasPendingMessage)
         {
             var msg = _statusListener.AcceptMessage();
-            // (ignored for now)
+            var s = msg.Data as string;
+            if (s != null && msg.Tag == _statusTag)
+            {
+                int sep = s.IndexOf('|');
+                if (sep > 0)
+                {
+                    long sid;
+                    if (long.TryParse(s.Substring(0, sep), System.Globalization.NumberStyles.Integer, CI, out sid))
+                        _friendGrids.Add(sid);
+                }
+            }
         }
     }
 }
@@ -924,6 +961,7 @@ bool ParseTelemetry(string s)
     int idx = 0;
     long hostId; int hostTick;
     if (!long.TryParse(parts[idx++], System.Globalization.NumberStyles.Integer, CI, out hostId)) return false;
+    if (!_friendGrids.Contains(hostId)) _friendGrids.Add(hostId);
     if (!int.TryParse(parts[idx++], System.Globalization.NumberStyles.Integer, CI, out hostTick)) return false;
 
     Vector3D pos, vel, fwd, up;
@@ -1079,31 +1117,9 @@ void ControlStep()
 
 bool TryGetKamikazeTarget(out Vector3D pos)
 {
+    long id; bool small;
+    if (TryGetTarget(out id, out pos, out small)) return true;
     pos = Vector3D.Zero;
-    if (_trackingTurret == null) return false;
-    long tid = 0;
-    Vector3D tpos = Vector3D.Zero;
-    var vt = _trackingTurret as IMyLargeTurretBase;
-    if (vt != null)
-    {
-        var info = vt.GetTargetedEntity();
-        if (!info.IsEmpty())
-        {
-            tid = info.EntityId;
-            tpos = info.Position;
-        }
-    }
-    else if (_trackingTurret.GetProperty("WC_TargetLock") != null)
-    {
-        tid = _trackingTurret.GetValue<long>("WC_TargetLock");
-        if (tid != 0 && _trackingTurret.GetProperty("WC_TargetPosition") != null)
-            tpos = _trackingTurret.GetValue<Vector3D>("WC_TargetPosition");
-    }
-    if (tid != 0 && !_friendGrids.Contains(tid))
-    {
-        pos = tpos;
-        return true;
-    }
     return false;
 }
 
