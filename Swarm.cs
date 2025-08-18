@@ -632,6 +632,43 @@ bool TryGetTarget(out long id, out Vector3D pos, out bool smallGrid)
     return false;
 }
 
+bool AnyEnemyInRange(double range)
+{
+    for (int i=0; i<_weapons.Count; i++)
+    {
+        var w = _weapons[i];
+        var vt = w as IMyLargeTurretBase;
+        if (vt != null)
+        {
+            var info = vt.GetTargetedEntity();
+            if (!info.IsEmpty() && !_friendGrids.Contains(info.EntityId))
+            {
+                double dist = Vector3D.Distance(info.Position, vt.GetPosition());
+                if (dist <= range) return true;
+            }
+            continue;
+        }
+        if (w.GetProperty("WC_TargetLock") != null)
+        {
+            long id = w.GetValue<long>("WC_TargetLock");
+            if (id != 0 && !_friendGrids.Contains(id))
+            {
+                if (w.GetProperty("WC_TargetPosition") != null)
+                {
+                    Vector3D pos = w.GetValue<Vector3D>("WC_TargetPosition");
+                    double dist = Vector3D.Distance(pos, w.GetPosition());
+                    if (dist <= range) return true;
+                }
+                else
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 void WeaponStep()
 {
     if (_role == Role.Satellite) MonitorAmmo();
@@ -652,9 +689,9 @@ void WeaponStep()
     bool hasTarget = TryGetTarget(out targetId, out targetPos, out targetSmall);
     double targetDist = hasTarget ? Vector3D.Distance(targetPos, _trackingTurret.GetPosition()) : double.MaxValue;
 
-    bool enemyNearby = hasTarget && targetDist <= _shieldDisableRange;
+    bool enemyNearby = AnyEnemyInRange(_shieldDisableRange);
     UpdateShields(enemyNearby);
-    if (enemyNearby && targetDist <= 12000.0)
+    if (hasTarget && enemyNearby && targetDist <= 12000.0)
     {
         ApplyGyros(targetPos - _controller.GetPosition());
         FireWeapons(targetId, targetPos, targetSmall);
