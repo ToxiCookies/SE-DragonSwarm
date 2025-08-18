@@ -656,9 +656,11 @@ bool TryGetWeaponTarget(out long id, out Vector3D pos, out double dist, out bool
         }
     }
 
+
     if (!hasTarget || targetId == 0 || _friendGrids.Contains(targetId)) return false;
     id = targetId; pos = targetPos; dist = targetDist; smallGrid = targetSmall;
     return true;
+
 }
 
 void FireWeapons(long id, Vector3D tpos, bool smallGrid)
