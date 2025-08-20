@@ -54,7 +54,6 @@ bool _debug = false;
 bool _kamikaze = false; // dive into target and detonate
 bool _weaponsEnabled = true; // allow weapon firing
 string _weaponSubsystem = "Any"; // WeaponCore subsystem targeting
-double _shieldDisableRange = 50000.0; // meters: shields off beyond this enemy distance
 
 // cached blocks
 IMyShipController _controller;
@@ -638,12 +637,12 @@ void WeaponStep()
     if (!_weaponsEnabled)
     {
         CeaseFire();
-        UpdateShields(false);
+        UpdateShields();
         return;
     }
     if (_trackingTurret == null || _weapons.Count == 0 || _controller == null)
     {
-        UpdateShields(false);
+        UpdateShields();
         return;
     }
     long targetId;
@@ -652,9 +651,8 @@ void WeaponStep()
     bool hasTarget = TryGetTarget(out targetId, out targetPos, out targetSmall);
     double targetDist = hasTarget ? Vector3D.Distance(targetPos, _trackingTurret.GetPosition()) : double.MaxValue;
 
-    bool enemyNearby = hasTarget && targetDist <= _shieldDisableRange;
-    UpdateShields(enemyNearby);
-    if (enemyNearby && targetDist <= 12000.0)
+    UpdateShields();
+    if (hasTarget && targetDist <= 12000.0)
     {
         ApplyGyros(targetPos - _controller.GetPosition());
         FireWeapons(targetId, targetPos, targetSmall);
@@ -710,19 +708,12 @@ void CeaseFire()
     }
 }
 
-void UpdateShields(bool enemyNearby)
+void UpdateShields()
 {
     for (int i=0; i<_shields.Count; i++)
     {
         var s = _shields[i];
-        if (enemyNearby)
-        {
-            if (!s.Enabled) s.Enabled = true;
-        }
-        else
-        {
-            if (s.Enabled) s.Enabled = false;
-        }
+        if (!s.Enabled) s.Enabled = true;
     }
 }
 

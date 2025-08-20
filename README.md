@@ -1,6 +1,6 @@
 ## DragonSwarm
 
-An autonomous, host-and-swarm program running from a single script. Satellites fall into designated orbit slots, arranged in concentric shells. Satellites now conserve power by disabling shields when no hostile grid is within 50 km and by favoring lighter weapons against small targets.
+An autonomous, host-and-swarm program running from a single script. Satellites fall into designated orbit slots, arranged in concentric shells. Satellites favor lighter weapons against small targets.
 Drop the respective .ini files into the custom data field, and recompile.
 Very customizable., just edit the .inis
 
