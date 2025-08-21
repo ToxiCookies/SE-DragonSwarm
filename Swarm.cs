@@ -54,6 +54,7 @@ bool _debug = false;
 bool _kamikaze = false; // dive into target and detonate
 bool _weaponsEnabled = true; // allow weapon firing
 string _weaponSubsystem = "Any"; // WeaponCore subsystem targeting
+int _missileGroup = 0; // firing group for missile role
 
 // cached blocks
 IMyShipController _controller;
@@ -111,7 +112,7 @@ double _dt = 1.0/6.0; // last timestep in seconds
 // mass cache
 double _shipMass = 0;
 
-enum Role { Host, Satellite }
+enum Role { Host, Satellite, Missile }
 
 enum FaceSide { MatchHost, Forward, Backward, Up, Down, Left, Right }
 
@@ -169,8 +170,13 @@ void ParseIni()
 {
     if (!_ini.TryParse(Me.CustomData)) _ini.Clear();
 
-    string roleStr = _ini.Get("Role","Mode").ToString(_role == Role.Satellite ? "Satellite" : "Host");
-    _role = roleStr == "Satellite" ? Role.Satellite : Role.Host;
+    string roleStr = _ini.Get("Role","Mode").ToString("Host");
+    switch(roleStr)
+    {
+        case "Satellite": _role = Role.Satellite; break;
+        case "Missile": _role = Role.Missile; break;
+        default: _role = Role.Host; break;
+    }
 
     _formationGroup = _ini.Get("IDs","FormationGroup").ToString(_formationGroup);
     string friend = _ini.Get("IDs","FriendTag").ToString(null);
@@ -208,6 +214,8 @@ void ParseIni()
     _alignKp     = _ini.Get("Control","AlignKp").ToDouble(_alignKp);
     double alignDeadzoneDeg = _ini.Get("Control","AlignDeadzoneDeg").ToDouble(_alignDeadzoneRad * 180.0 / Math.PI);
     _alignDeadzoneRad = alignDeadzoneDeg * Math.PI / 180.0;
+
+    _missileGroup = _ini.Get("Missile","Group").ToInt32(_missileGroup);
 
     string faceStr = _ini.Get("Control","ParkingFace").ToString("MatchHost");
     switch(faceStr)
@@ -438,7 +446,7 @@ void SetupIGC()
     _cmdListener    = null;
     _friendListener = null;
 
-    if (_role == Role.Satellite)
+    if (_role != Role.Host)
     {
         _hostListener = IGC.RegisterBroadcastListener(_hostTag);
         _hostListener.SetMessageCallback(_hostTag); // optional
@@ -518,6 +526,16 @@ public void Main(string argument, UpdateType updateSource)
         {
             IGC.SendBroadcastMessage(_cmdTag, "CMD|REARM|", TransmissionDistance.TransmissionDistanceMax);
         }
+        else if (argument.StartsWith("fire", System.StringComparison.OrdinalIgnoreCase) && _role == Role.Host)
+        {
+            var parts = argument.Split(new[]{' '}, 2);
+            int grp = 0;
+            if (parts.Length > 1)
+                int.TryParse(parts[1], out grp);
+            _sb.Clear();
+            _sb.Append("CMD|FIRE|").Append(grp).Append('|');
+            IGC.SendBroadcastMessage(_cmdTag, _sb.ToString(), TransmissionDistance.TransmissionDistanceMax);
+        }
         else if (argument == "jump" && _role == Role.Host)
         {
             if (_jumpDrives.Count > 0)
@@ -540,7 +558,7 @@ public void Main(string argument, UpdateType updateSource)
     if ((_tick % 60) == 0)
         BroadcastFriendId();
 
-    if (_role == Role.Satellite &&
+    if (_role != Role.Host &&
         _timeSinceTelemetry > 43200.0 && _timeSinceTelemetry < 100000.0)
     {
         bool hasJump = false;
@@ -631,9 +649,34 @@ bool TryGetTarget(out long id, out Vector3D pos, out bool smallGrid)
     return false;
 }
 
+bool TryGetLargestEnemy(out Vector3D pos)
+{
+    pos = Vector3D.Zero;
+    double bestVol = 0;
+    for (int i=0; i<_sensors.Count; i++)
+    {
+        var s = _sensors[i];
+        if (!s.IsWorking || !s.IsActive) continue;
+        var info = s.LastDetectedEntity;
+        if (info.Type != MyDetectedEntityType.LargeGrid && info.Type != MyDetectedEntityType.SmallGrid) continue;
+        if (_friendGrids.Contains(info.EntityId)) continue;
+        Vector3D size = info.BoundingBox.Max - info.BoundingBox.Min;
+        double vol = size.X * size.Y * size.Z;
+        if (vol > bestVol)
+        {
+            bestVol = vol;
+            pos = info.Position;
+        }
+    }
+    if (bestVol > 0) return true;
+    long id; bool small;
+    if (TryGetTarget(out id, out pos, out small)) return true;
+    return false;
+}
+
 void WeaponStep()
 {
-    if (_role == Role.Satellite) MonitorAmmo();
+    if (_role != Role.Host) MonitorAmmo();
     if (!_weaponsEnabled)
     {
         CeaseFire();
@@ -865,6 +908,21 @@ void SatStep()
                             {
                                 w.IsArmed = true;
                                 w.Detonate();
+                            }
+                        }
+                    }
+                    else if (parts[1] == "FIRE")
+                    {
+                        int grp = 0;
+                        if (parts.Length > 2)
+                            int.TryParse(parts[2], out grp);
+                        if (_role == Role.Missile && grp == _missileGroup)
+                        {
+                            _kamikaze = true;
+                            for (int i=0; i<_warheads.Count; i++)
+                            {
+                                var w = _warheads[i];
+                                if (w != null) w.IsArmed = true;
                             }
                         }
                     }
@@ -1108,6 +1166,7 @@ void ControlStep()
 
 bool TryGetKamikazeTarget(out Vector3D pos)
 {
+    if (_role == Role.Missile && TryGetLargestEnemy(out pos)) return true;
     long id; bool small;
     if (TryGetTarget(out id, out pos, out small)) return true;
     pos = Vector3D.Zero;
@@ -1118,20 +1177,11 @@ void KamikazeStep()
 {
     Vector3D targetPos;
     if (!TryGetKamikazeTarget(out targetPos)) return;
+    _shipMass = _controller.CalculateShipMass().PhysicalMass;
     Vector3D myPos = _controller.GetPosition();
+    Vector3D vel   = _controller.GetShipVelocities().LinearVelocity;
     Vector3D toTarget = targetPos - myPos;
     double dist = toTarget.Length();
-    if (dist > 1e-3)
-    {
-        Vector3D dir = toTarget / dist;
-        MatrixD grid = Me.CubeGrid.WorldMatrix;
-        Vector3D local = Vector3D.TransformNormal(dir, MatrixD.Transpose(grid));
-        FullThrustAxis(_axisX, local.X);
-        FullThrustAxis(_axisY, local.Y);
-        FullThrustAxis(_axisZ, local.Z);
-        ApplyGyros(toTarget);
-    }
-
     if (dist < 25.0)
     {
         for (int i=0; i<_warheads.Count; i++)
@@ -1143,6 +1193,34 @@ void KamikazeStep()
                 w.Detonate();
             }
         }
+        return;
+    }
+
+    if (dist > 1e-3)
+    {
+        Vector3D dir = toTarget / dist;
+        double closing = Vector3D.Dot(vel, dir);
+        Vector3D lateral = vel - dir * closing;
+
+        double sumThrust =
+            _axisX.MaxPos + _axisX.MaxNeg +
+            _axisY.MaxPos + _axisY.MaxNeg +
+            _axisZ.MaxPos + _axisZ.MaxNeg;
+        double maxAccel = (sumThrust > 0 && _shipMass > 1e-3) ? (sumThrust / _shipMass) : 5.0;
+
+        double desiredSpeed = System.Math.Sqrt(System.Math.Max(0.0, 2.0 * maxAccel * dist));
+        double accelAlong = (desiredSpeed - closing) * _kd;
+        if (accelAlong >  maxAccel) accelAlong =  maxAccel;
+        if (accelAlong < -maxAccel) accelAlong = -maxAccel;
+
+        Vector3D accelCmd = dir * accelAlong - lateral * _kd;
+
+        MatrixD grid = Me.CubeGrid.WorldMatrix;
+        Vector3D local = Vector3D.TransformNormal(accelCmd, MatrixD.Transpose(grid));
+        ApplyThrust(_axisX, local.X);
+        ApplyThrust(_axisY, local.Y);
+        ApplyThrust(_axisZ, local.Z);
+        ApplyGyros(toTarget);
     }
 }
 
@@ -1189,27 +1267,6 @@ void ApplyThrust(ThrusterAxis axis, double accel)
         if (pct > 1) pct = 1;
         for (int i=0; i<axis.Neg.Count; i++) axis.Neg[i].ThrustOverridePercentage = (float)pct;
         for (int i=0; i<axis.Pos.Count; i++) axis.Pos[i].ThrustOverridePercentage = 0f;
-    }
-}
-
-void FullThrustAxis(ThrusterAxis axis, double dir)
-{
-    if (axis.Pos.Count == 0 && axis.Neg.Count == 0) return;
-
-    if (dir > 0.01)
-    {
-        for (int i=0; i<axis.Pos.Count; i++) axis.Pos[i].ThrustOverridePercentage = 1f;
-        for (int i=0; i<axis.Neg.Count; i++) axis.Neg[i].ThrustOverridePercentage = 0f;
-    }
-    else if (dir < -0.01)
-    {
-        for (int i=0; i<axis.Neg.Count; i++) axis.Neg[i].ThrustOverridePercentage = 1f;
-        for (int i=0; i<axis.Pos.Count; i++) axis.Pos[i].ThrustOverridePercentage = 0f;
-    }
-    else
-    {
-        for (int i=0; i<axis.Pos.Count; i++) axis.Pos[i].ThrustOverridePercentage = 0f;
-        for (int i=0; i<axis.Neg.Count; i++) axis.Neg[i].ThrustOverridePercentage = 0f;
     }
 }
 
@@ -1430,11 +1487,14 @@ void EchoStatus()
     _echo.Clear();
     _echo.Append("Role: ").Append(_role.ToString()).Append('\n');
 
-    if (_role == Role.Satellite)
+    if (_role == Role.Satellite || _role == Role.Missile)
     {
         _echo.Append("Idx ").Append(_index)
              .Append("  s").Append(_shellOfIndex)
-             .Append(" j").Append(_pointInShell).Append('\n');
+             .Append(" j").Append(_pointInShell);
+        if (_role == Role.Missile)
+            _echo.Append(" g").Append(_missileGroup);
+        _echo.Append('\n');
         _echo.Append("Telm ").Append(System.Math.Round(_timeSinceTelemetry,1).ToString(CI)).Append("s\n");
     }
 
