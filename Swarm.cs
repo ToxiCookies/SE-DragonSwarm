@@ -66,6 +66,9 @@ readonly System.Collections.Generic.List<IMyJumpDrive> _jumpDrives = new System.
 readonly System.Collections.Generic.List<IMyTerminalBlock> _weapons = new System.Collections.Generic.List<IMyTerminalBlock>(32);
 readonly System.Collections.Generic.List<IMyTerminalBlock> _lowPowerWeapons = new System.Collections.Generic.List<IMyTerminalBlock>(32);
 readonly System.Collections.Generic.List<IMyFunctionalBlock> _shields = new System.Collections.Generic.List<IMyFunctionalBlock>(4);
+ShieldApi _shieldApi;
+double _enemyClear = 60.0;
+bool _shieldUp = false;
 IMyTerminalBlock _trackingTurret;
 Vector3D _jumpTarget;
 double _jumpDelay = -1.0; // seconds until executing a received jump
@@ -122,6 +125,26 @@ class ThrusterAxis {
     public double MaxPos;
     public double MaxNeg;
     public void Reset() { Pos.Clear(); Neg.Clear(); MaxPos = 0; MaxNeg = 0; }
+}
+
+class ShieldApi {
+    IMyTerminalBlock _block;
+    System.Func<IMyTerminalBlock, bool> _isShieldUp;
+    public ShieldApi(IMyTerminalBlock block)
+    {
+        _block = block;
+        var prop = block.GetProperty("DefenseSystemsPbAPI");
+        if (prop != null)
+        {
+            var del = prop.As<System.Collections.Generic.IReadOnlyDictionary<string, System.Delegate>>().GetValue(block);
+            if (del != null)
+                _isShieldUp = (System.Func<IMyTerminalBlock, bool>)del["IsShieldUp"];
+        }
+    }
+    public bool IsShieldUp()
+    {
+        return _block != null && _isShieldUp != null && _isShieldUp.Invoke(_block);
+    }
 }
 
 #endregion
@@ -360,6 +383,18 @@ void DiscoverBlocks()
         var s = b as IMySensorBlock;
         if (s != null && s.CustomName.IndexOf("[Swarm Sensor]", System.StringComparison.OrdinalIgnoreCase) >= 0)
             _sensors.Add(s);
+    }
+
+    if (_shields.Count > 0)
+    {
+        _shieldApi = new ShieldApi(_shields[0]);
+        _shieldUp = _shieldApi.IsShieldUp();
+    }
+    else
+    {
+        _shieldApi = null;
+        _shieldUp = false;
+        _enemyClear = 60.0;
     }
 
     // fallback controller if named one not found
@@ -753,10 +788,45 @@ void CeaseFire()
 
 void UpdateShields()
 {
-    for (int i=0; i<_shields.Count; i++)
+    if (_shields.Count == 0) return;
+    if (_shieldApi != null) _shieldUp = _shieldApi.IsShieldUp();
+
+    bool enemy = false;
+    if (_useSensors && _sensors.Count > 0)
     {
-        var s = _shields[i];
-        if (!s.Enabled) s.Enabled = true;
+        for (int i=0; i<_sensors.Count; i++)
+        {
+            var s = _sensors[i];
+            if (!s.IsWorking || !s.IsActive) continue;
+            var info = s.LastDetectedEntity;
+            if (info.Type == MyDetectedEntityType.None) continue;
+            if (info.Relationship == MyRelationsBetweenPlayerAndBlock.Enemies)
+            {
+                enemy = true;
+                break;
+            }
+        }
+    }
+
+    if (enemy)
+    {
+        _enemyClear = 0.0;
+        if (!_shieldUp)
+        {
+            for (int i=0; i<_shields.Count; i++)
+                _shields[i].ApplyAction("ShieldRaise");
+            _shieldUp = true;
+        }
+    }
+    else
+    {
+        _enemyClear += _dt;
+        if (_shieldUp && _enemyClear >= 60.0)
+        {
+            for (int i=0; i<_shields.Count; i++)
+                _shields[i].ApplyAction("ShieldLower");
+            _shieldUp = false;
+        }
     }
 }
 
