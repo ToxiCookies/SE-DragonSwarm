@@ -65,7 +65,7 @@ readonly System.Collections.Generic.List<IMyWarhead> _warheads = new System.Coll
 readonly System.Collections.Generic.List<IMyJumpDrive> _jumpDrives = new System.Collections.Generic.List<IMyJumpDrive>(8);
 readonly System.Collections.Generic.List<IMyTerminalBlock> _weapons = new System.Collections.Generic.List<IMyTerminalBlock>(32);
 readonly System.Collections.Generic.List<IMyTerminalBlock> _lowPowerWeapons = new System.Collections.Generic.List<IMyTerminalBlock>(32);
-readonly System.Collections.Generic.List<IMyFunctionalBlock> _shields = new System.Collections.Generic.List<IMyFunctionalBlock>(4);
+readonly System.Collections.Generic.List<IMyFunctionalBlock> _shieldControllers = new System.Collections.Generic.List<IMyFunctionalBlock>(4);
 ShieldApi _shieldApi;
 double _enemyClear = 60.0;
 bool _shieldUp = false;
@@ -304,7 +304,7 @@ void DiscoverBlocks()
     _warheads.Clear();
     _weapons.Clear();
     _lowPowerWeapons.Clear();
-    _shields.Clear();
+    _shieldControllers.Clear();
     _trackingTurret = null;
     _jumpDrives.Clear();
     _axisX.Reset(); _axisY.Reset(); _axisZ.Reset();
@@ -321,9 +321,9 @@ void DiscoverBlocks()
         {
             string disp = shield.DefinitionDisplayNameText;
             if (!string.IsNullOrEmpty(disp) &&
-                disp.IndexOf("Shield", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                disp.IndexOf("Shield Controller", System.StringComparison.OrdinalIgnoreCase) >= 0)
             {
-                _shields.Add(shield);
+                _shieldControllers.Add(shield);
                 continue;
             }
         }
@@ -385,9 +385,9 @@ void DiscoverBlocks()
             _sensors.Add(s);
     }
 
-    if (_shields.Count > 0)
+    if (_shieldControllers.Count > 0)
     {
-        _shieldApi = new ShieldApi(_shields[0]);
+        _shieldApi = new ShieldApi(_shieldControllers[0]);
         _shieldUp = _shieldApi.IsShieldUp();
     }
     else
@@ -788,7 +788,7 @@ void CeaseFire()
 
 void UpdateShields()
 {
-    if (_shields.Count == 0) return;
+    if (_shieldControllers.Count == 0) return;
     if (_shieldApi != null) _shieldUp = _shieldApi.IsShieldUp();
 
     bool enemy = false;
@@ -813,8 +813,8 @@ void UpdateShields()
         _enemyClear = 0.0;
         if (!_shieldUp)
         {
-            for (int i=0; i<_shields.Count; i++)
-                _shields[i].ApplyAction("ShieldRaise");
+            for (int i=0; i<_shieldControllers.Count; i++)
+                _shieldControllers[i].ApplyAction("DS-C_ToggleShield_On");
             _shieldUp = true;
         }
     }
@@ -823,8 +823,8 @@ void UpdateShields()
         _enemyClear += _dt;
         if (_shieldUp && _enemyClear >= 60.0)
         {
-            for (int i=0; i<_shields.Count; i++)
-                _shields[i].ApplyAction("ShieldLower");
+            for (int i=0; i<_shieldControllers.Count; i++)
+                _shieldControllers[i].ApplyAction("DS-C_ToggleShield_Off");
             _shieldUp = false;
         }
     }
