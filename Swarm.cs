@@ -317,15 +317,10 @@ void DiscoverBlocks()
         if (b.CubeGrid != Me.CubeGrid) continue;
 
         var shield = b as IMyFunctionalBlock;
-        if (shield != null)
+        if (shield != null && shield.GetProperty("DefenseSystemsPbAPI") != null)
         {
-            string disp = shield.DefinitionDisplayNameText;
-            if (!string.IsNullOrEmpty(disp) &&
-                disp.IndexOf("Shield Controller", System.StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                _shieldControllers.Add(shield);
-                continue;
-            }
+            _shieldControllers.Add(shield);
+            continue;
         }
 
         var sc = b as IMyShipController;
