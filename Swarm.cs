@@ -65,6 +65,8 @@ readonly System.Collections.Generic.List<IMyWarhead> _warheads = new System.Coll
 readonly System.Collections.Generic.List<IMyJumpDrive> _jumpDrives = new System.Collections.Generic.List<IMyJumpDrive>(8);
 readonly System.Collections.Generic.List<IMyTerminalBlock> _weapons = new System.Collections.Generic.List<IMyTerminalBlock>(32);
 readonly System.Collections.Generic.List<IMyTerminalBlock> _lowPowerWeapons = new System.Collections.Generic.List<IMyTerminalBlock>(32);
+IMyShipConnector _myConnector;
+readonly System.Collections.Generic.List<PadInfo> _pads = new System.Collections.Generic.List<PadInfo>(8);
 IMyTimerBlock _shieldUpTimer;
 IMyTimerBlock _shieldDownTimer;
 double _shieldRange = 0.0;
@@ -90,11 +92,15 @@ IMyBroadcastListener _hostListener;   // for satellites
 IMyBroadcastListener _statusListener; // for host
 IMyBroadcastListener _cmdListener;    // command listener for satellites
 IMyBroadcastListener _friendListener; // friend grid IDs
+IMyBroadcastListener _dockRegListener; // docking registry (satellites)
+IMyUnicastListener _dockUnicast;      // docking reservations
 
 string _hostTag;
 string _statusTag;
 string _cmdTag;
 string _friendTag; // IGC tag used to share friendly grid IDs (defaults to FormationGroup.FRIEND)
+const string DOCK_REG_TAG = "DOCK/REG";
+const string DOCK_REQ_TAG = "DOCK/REQ";
 
 // runtime
 int _tick = 0;
@@ -115,9 +121,16 @@ double _dt = 1.0/6.0; // last timestep in seconds
 // mass cache
 double _shipMass = 0;
 
+DockState _dockState = DockState.Clear;
+int _dockPadId = -1;
+Vector3D _padPos, _padAxis, _padUp;
+Vector3D _approachPoint, _capturePoint;
+
 enum Role { Host, Satellite, Missile }
 
 enum FaceSide { MatchHost, Forward, Backward, Up, Down, Left, Right }
+
+enum DockState { Search, Reserve, Approach, Align, Dock, Locked, Undock, Clear }
 
 class ThrusterAxis {
     public readonly System.Collections.Generic.List<IMyThrust> Pos = new System.Collections.Generic.List<IMyThrust>(16);
@@ -125,6 +138,16 @@ class ThrusterAxis {
     public double MaxPos;
     public double MaxNeg;
     public void Reset() { Pos.Clear(); Neg.Clear(); MaxPos = 0; MaxNeg = 0; }
+}
+
+class PadInfo {
+    public int Id;
+    public IMyShipConnector Conn;
+    public Vector3D Pos;
+    public Vector3D Axis;
+    public Vector3D Up;
+    public long ReservedBy;
+    public bool Occupied;
 }
 
 #endregion
@@ -286,6 +309,8 @@ void DiscoverBlocks()
     _warheads.Clear();
     _weapons.Clear();
     _lowPowerWeapons.Clear();
+    _pads.Clear();
+    _myConnector = null;
     _shieldUpTimer = null;
     _shieldDownTimer = null;
     _enemyInRange = false;
@@ -342,6 +367,29 @@ void DiscoverBlocks()
         if (ant != null)
         {
             if (_antenna == null) { _antenna = ant; _antennaHud = ant.HudText; }
+            continue;
+        }
+
+        var con = b as IMyShipConnector;
+        if (con != null)
+        {
+            if (_role == Role.Host)
+            {
+                if (con.CustomName.IndexOf("[PAD]", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    int id = _pads.Count;
+                    string name = con.CustomName;
+                    int idx = name.IndexOf("[PAD]", System.StringComparison.OrdinalIgnoreCase) + 5;
+                    int end = idx;
+                    while (end < name.Length && System.Char.IsDigit(name[end])) end++;
+                    if (end > idx) int.TryParse(name.Substring(idx, end - idx), out id);
+                    var pad = new PadInfo(); pad.Id = id; pad.Conn = con; _pads.Add(pad);
+                }
+            }
+            else if (_myConnector == null)
+            {
+                _myConnector = con;
+            }
             continue;
         }
 
@@ -455,6 +503,8 @@ void SetupIGC()
     _statusListener = null;
     _cmdListener    = null;
     _friendListener = null;
+    _dockRegListener = null;
+    _dockUnicast = IGC.UnicastListener;
 
     if (_role != Role.Host)
     {
@@ -462,6 +512,8 @@ void SetupIGC()
         _hostListener.SetMessageCallback(_hostTag); // optional
         _cmdListener = IGC.RegisterBroadcastListener(_cmdTag);
         _cmdListener.SetMessageCallback(_cmdTag);
+        _dockRegListener = IGC.RegisterBroadcastListener(DOCK_REG_TAG);
+        _dockRegListener.SetMessageCallback(DOCK_REG_TAG);
     }
     else
     {
@@ -557,6 +609,16 @@ public void Main(string argument, UpdateType updateSource)
                 IGC.SendBroadcastMessage(_cmdTag, _sb.ToString(), TransmissionDistance.TransmissionDistanceMax);
                 _jumpDrives[0].ApplyAction("Jump");
             }
+        }
+        else if (argument == "dock" && _role != Role.Host)
+        {
+            _dockState = DockState.Search;
+        }
+        else if (argument == "undock" && _role != Role.Host)
+        {
+            if (_myConnector != null && _myConnector.Status == MyShipConnectorStatus.Connected)
+                _myConnector.Disconnect();
+            _dockState = DockState.Undock;
         }
     }
 
@@ -879,6 +941,8 @@ void HostStep()
             }
         }
     }
+
+    DockHostUpdate();
 }
 
 void SendTelemetry()
@@ -1031,6 +1095,8 @@ void SatStep()
         ClearOverrides();
         return;
     }
+
+    if (DockSatUpdate()) return;
 
     // Control step ~6 Hz (every Update10 tick)
     ControlStep();
@@ -1491,6 +1557,274 @@ void SendStatus()
     _sb.Append(_index); _sb.Append('|');
     AppendVector(pos);
     IGC.SendBroadcastMessage(_statusTag, _sb.ToString(), TransmissionDistance.TransmissionDistanceMax);
+}
+
+#endregion
+
+#region Docking
+
+void DockHostUpdate()
+{
+    bool active = false;
+    for (int i=0; i<_pads.Count; i++)
+    {
+        var p = _pads[i];
+        if (p.Conn == null) continue;
+        p.Pos = p.Conn.WorldMatrix.Translation;
+        p.Axis = p.Conn.WorldMatrix.Forward;
+        p.Up   = p.Conn.WorldMatrix.Up;
+        p.Occupied = (p.Conn.Status == MyShipConnectorStatus.Connected);
+        if (p.Occupied || p.ReservedBy != 0) active = true;
+    }
+
+    if (_dockUnicast != null)
+    {
+        while (_dockUnicast.HasPendingMessage)
+        {
+            var msg = _dockUnicast.AcceptMessage();
+            var s = msg.Data as string;
+            if (s != null && msg.Tag == DOCK_REQ_TAG)
+            {
+                if (s.StartsWith("REQ ", System.StringComparison.Ordinal))
+                {
+                    int id;
+                    if (int.TryParse(s.Substring(4), out id))
+                    {
+                        var pad = FindPad(id);
+                        if (pad != null && !pad.Occupied && pad.ReservedBy == 0)
+                        {
+                            pad.ReservedBy = msg.Source;
+                            _sb.Clear();
+                            _sb.Append("ACK|").Append(id).Append('|');
+                            AppendVector(pad.Pos); AppendVector(pad.Axis); AppendVector(pad.Up);
+                            IGC.SendUnicastMessage(msg.Source, DOCK_REQ_TAG, _sb.ToString());
+                        }
+                    }
+                }
+                else if (s.StartsWith("REL ", System.StringComparison.Ordinal))
+                {
+                    int id;
+                    if (int.TryParse(s.Substring(4), out id))
+                    {
+                        var pad = FindPad(id);
+                        if (pad != null && pad.ReservedBy == msg.Source)
+                            pad.ReservedBy = 0;
+                    }
+                }
+            }
+        }
+    }
+
+    if ((_tick % 5) == 0 && _pads.Count > 0)
+    {
+        _sb.Clear();
+        for (int i=0; i<_pads.Count; i++)
+        {
+            var p = _pads[i];
+            _sb.Append(p.Id).Append('|');
+            AppendVector(p.Pos); AppendVector(p.Axis); AppendVector(p.Up);
+            _sb.Append(p.Occupied ? 1 : 0); _sb.Append('|');
+            _sb.Append(p.ReservedBy != 0 ? 1 : 0); _sb.Append(';');
+        }
+        IGC.SendBroadcastMessage(DOCK_REG_TAG, _sb.ToString());
+    }
+
+    if (active) HoldStation();
+}
+
+bool DockSatUpdate()
+{
+    if (_myConnector == null) return false;
+
+    if (_dockRegListener != null)
+    {
+        while (_dockRegListener.HasPendingMessage)
+        {
+            var msg = _dockRegListener.AcceptMessage();
+            var s = msg.Data as string;
+            if (s != null && msg.Tag == DOCK_REG_TAG)
+            {
+                var entries = s.Split(';');
+                for (int e=0; e<entries.Length; e++)
+                {
+                    var entry = entries[e];
+                    if (string.IsNullOrEmpty(entry)) continue;
+                    var parts = entry.Split('|');
+                    if (parts.Length < 13) continue;
+                    int idx = 0;
+                    int pid;
+                    if (!int.TryParse(parts[idx++], out pid)) continue;
+                    Vector3D ppos, paxis, pup;
+                    if (!TryReadVec(parts, ref idx, out ppos)) continue;
+                    if (!TryReadVec(parts, ref idx, out paxis)) continue;
+                    if (!TryReadVec(parts, ref idx, out pup)) continue;
+                    int occ = 0, res = 0;
+                    int.TryParse(parts[idx++], out occ);
+                    int.TryParse(parts[idx++], out res);
+                    if (_dockState == DockState.Search && occ == 0 && res == 0 && _hostId != 0)
+                    {
+                        _dockPadId = pid;
+                        _sb.Clear();
+                        _sb.Append("REQ ").Append(pid);
+                        IGC.SendUnicastMessage(_hostId, DOCK_REQ_TAG, _sb.ToString());
+                        _dockState = DockState.Reserve;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if (_dockUnicast != null)
+    {
+        while (_dockUnicast.HasPendingMessage)
+        {
+            var msg = _dockUnicast.AcceptMessage();
+            var s = msg.Data as string;
+            if (s != null && msg.Tag == DOCK_REQ_TAG)
+            {
+                var parts = s.Split('|');
+                if (parts.Length >= 14 && parts[0] == "ACK")
+                {
+                    int id;
+                    if (int.TryParse(parts[1], out id) && id == _dockPadId)
+                    {
+                        int idx = 2;
+                        Vector3D ppos, paxis, pup;
+                        if (TryReadVec(parts, ref idx, out ppos) && TryReadVec(parts, ref idx, out paxis) && TryReadVec(parts, ref idx, out pup))
+                        {
+                            _padPos = ppos; _padAxis = paxis; _padUp = pup;
+                            _approachPoint = _padPos + _padAxis * 40.0;
+                            _capturePoint = _padPos + _padAxis * 0.5;
+                            _dockState = DockState.Approach;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Vector3D myPos = _controller.GetPosition();
+
+    switch (_dockState)
+    {
+        case DockState.Search:
+        case DockState.Reserve:
+            ClearOverrides();
+            return true;
+        case DockState.Approach:
+            NavigateTo(_approachPoint);
+            if (Vector3D.Distance(myPos, _approachPoint) < 5.0) _dockState = DockState.Align;
+            return true;
+        case DockState.Align:
+            NavigateTo(_capturePoint);
+            bool aligned = AlignToPad(_padAxis, _padUp);
+            if (Vector3D.Distance(myPos, _capturePoint) < 0.6 && aligned)
+            {
+                if (_myConnector.Status == MyShipConnectorStatus.Connectable)
+                    _myConnector.Connect();
+                if (_myConnector.Status == MyShipConnectorStatus.Connected)
+                    _dockState = DockState.Locked;
+            }
+            return true;
+        case DockState.Locked:
+            HoldStation();
+            return true;
+        case DockState.Undock:
+            AlignToPad(_padAxis, _padUp);
+            NavigateTo(_approachPoint);
+            if (Vector3D.Distance(myPos, _approachPoint) > 20.0)
+            {
+                if (_dockPadId >= 0 && _hostId != 0)
+                {
+                    _sb.Clear();
+                    _sb.Append("REL ").Append(_dockPadId);
+                    IGC.SendUnicastMessage(_hostId, DOCK_REQ_TAG, _sb.ToString());
+                }
+                _dockPadId = -1;
+                _dockState = DockState.Clear;
+            }
+            return true;
+    }
+    return false;
+}
+
+PadInfo FindPad(int id)
+{
+    for (int i=0; i<_pads.Count; i++)
+        if (_pads[i].Id == id) return _pads[i];
+    return null;
+}
+
+bool AlignToPad(Vector3D axis, Vector3D up)
+{
+    if (_controller == null) return true;
+    Vector3D sF = _controller.WorldMatrix.Forward;
+    Vector3D sU = _controller.WorldMatrix.Up;
+    Vector3D sR = _controller.WorldMatrix.Right;
+    Vector3D tF = axis;
+    Vector3D tU = up;
+    Vector3D tR = tF.Cross(tU);
+    Vector3D err = sF.Cross(tF) + sU.Cross(tU) + sR.Cross(tR);
+    double errMag = err.Length();
+    if (errMag < _alignDeadzoneRad)
+    {
+        for (int i=0; i<_gyros.Count; i++)
+        {
+            var g = _gyros[i];
+            g.GyroOverride = false;
+            g.Pitch = g.Yaw = g.Roll = 0f;
+        }
+        return true;
+    }
+    MatrixD invShip = MatrixD.Transpose(_controller.WorldMatrix);
+    Vector3D localRot = Vector3D.TransformNormal(err, invShip) * _alignKp;
+    if (localRot.X > 2) localRot.X = 2; if (localRot.X < -2) localRot.X = -2;
+    if (localRot.Y > 2) localRot.Y = 2; if (localRot.Y < -2) localRot.Y = -2;
+    if (localRot.Z > 2) localRot.Z = 2; if (localRot.Z < -2) localRot.Z = -2;
+    for (int i=0; i<_gyros.Count; i++)
+    {
+        var g = _gyros[i];
+        MatrixD inv = MatrixD.Transpose(g.WorldMatrix);
+        Vector3D gyroVec = Vector3D.TransformNormal(localRot, inv);
+        g.GyroOverride = true;
+        g.Pitch = (float)gyroVec.X;
+        g.Yaw   = (float)gyroVec.Y;
+        g.Roll  = (float)gyroVec.Z;
+    }
+    return false;
+}
+
+void NavigateTo(Vector3D target)
+{
+    if (_controller == null) return;
+    _shipMass = _controller.CalculateShipMass().PhysicalMass;
+    Vector3D myPos = _controller.GetPosition();
+    Vector3D vel = _controller.GetShipVelocities().LinearVelocity;
+    Vector3D error = target - myPos;
+    double dist = error.Length();
+    Vector3D accelCmd = (_kp * error - vel) * _kd;
+    Vector3D g = _controller.GetNaturalGravity();
+    if (g.LengthSquared() > 1e-6) accelCmd -= g;
+    double speedCap = (dist > 15.0 ? 10.0 : dist > 3.0 ? 1.0 : 0.2);
+    double spd = vel.Length();
+    if (spd > speedCap)
+    {
+        Vector3D dir = vel / System.Math.Max(spd, 1e-3);
+        double along = Vector3D.Dot(accelCmd, dir);
+        if (along > 0) accelCmd -= dir * along;
+    }
+    MatrixD grid = Me.CubeGrid.WorldMatrix;
+    Vector3D local = Vector3D.TransformNormal(accelCmd, MatrixD.Transpose(grid));
+    ApplyThrust(_axisX, local.X);
+    ApplyThrust(_axisY, local.Y);
+    ApplyThrust(_axisZ, local.Z);
+}
+
+void HoldStation()
+{
+    ClearOverrides();
+    if (_controller != null) _controller.DampenersOverride = true;
 }
 
 #endregion
