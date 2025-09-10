@@ -65,10 +65,15 @@ readonly System.Collections.Generic.List<IMyWarhead> _warheads = new System.Coll
 readonly System.Collections.Generic.List<IMyJumpDrive> _jumpDrives = new System.Collections.Generic.List<IMyJumpDrive>(8);
 readonly System.Collections.Generic.List<IMyTerminalBlock> _weapons = new System.Collections.Generic.List<IMyTerminalBlock>(32);
 readonly System.Collections.Generic.List<IMyTerminalBlock> _lowPowerWeapons = new System.Collections.Generic.List<IMyTerminalBlock>(32);
-IMyTimerBlock _shieldUpTimer;
-IMyTimerBlock _shieldDownTimer;
+IMyTerminalBlock _shieldController;
 double _shieldRange = 0.0;
 bool _enemyInRange = false;
+bool _shieldRaised = true;
+double _noEnemyTime = 0.0;
+double _shieldCooldown = 0.0;
+FaceSide _shuntFocus = FaceSide.MatchHost;
+bool _fortify = false;
+bool _structReinforce = false;
 IMyTerminalBlock _trackingTurret;
 Vector3D _jumpTarget;
 double _jumpDelay = -1.0; // seconds until executing a received jump
@@ -286,9 +291,14 @@ void DiscoverBlocks()
     _warheads.Clear();
     _weapons.Clear();
     _lowPowerWeapons.Clear();
-    _shieldUpTimer = null;
-    _shieldDownTimer = null;
+    _shieldController = null;
     _enemyInRange = false;
+    _shieldRaised = true;
+    _noEnemyTime = 0.0;
+    _shieldCooldown = 0.0;
+    _shuntFocus = FaceSide.MatchHost;
+    _fortify = false;
+    _structReinforce = false;
     _trackingTurret = null;
     _jumpDrives.Clear();
     _axisX.Reset(); _axisY.Reset(); _axisZ.Reset();
@@ -300,19 +310,14 @@ void DiscoverBlocks()
         var b = tmp[i];
         if (b.CubeGrid != Me.CubeGrid) continue;
 
-        var timer = b as IMyTimerBlock;
-        if (timer != null)
+        if (_shieldController == null && b.GetActionWithName("DS-C_ToggleShield_On") != null)
         {
-            if (timer.CustomName.IndexOf("[Shields Up]", System.StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                _shieldUpTimer = timer;
-                continue;
-            }
-            if (timer.CustomName.IndexOf("[Shields Down]", System.StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                _shieldDownTimer = timer;
-                continue;
-            }
+            _shieldController = b;
+            if (b.GetProperty("DS-C_ToggleShield") != null)
+                _shieldRaised = b.GetValueBool("DS-C_ToggleShield");
+            if (b.GetProperty("DS-C_SideRedirect") != null)
+                b.SetValueBool("DS-C_SideRedirect", true);
+            continue;
         }
 
         var sc = b as IMyShipController;
@@ -763,10 +768,16 @@ void CeaseFire()
 
 void UpdateShields()
 {
-    if (_shieldRange <= 0.0) return;
-    if (_shieldUpTimer == null && _shieldDownTimer == null) return;
+    if (_shieldRange <= 0.0 || _shieldController == null) return;
+
+    if (_shieldCooldown > 0.0)
+    {
+        _shieldCooldown -= _dt;
+        if (_shieldCooldown < 0.0) _shieldCooldown = 0.0;
+    }
 
     bool enemy = false;
+    Vector3D enemyPos = Vector3D.Zero;
     Vector3D pos = Me.CubeGrid.WorldMatrix.Translation;
     double dist2 = _shieldRange * _shieldRange;
 
@@ -782,20 +793,112 @@ void UpdateShields()
             if (info.Position.HasValue && Vector3D.DistanceSquared(info.Position.Value, pos) <= dist2)
             {
                 enemy = true;
+                enemyPos = info.Position.Value;
                 break;
             }
         }
     }
 
-    if (enemy && !_enemyInRange)
+    if (enemy)
     {
-        if (_shieldUpTimer != null) _shieldUpTimer.ApplyAction("TriggerNow");
+        _noEnemyTime = 0.0;
+        bool changed = false;
+        if (!_enemyInRange)
+        {
+            if (!_shieldRaised)
+            {
+                _shieldController.ApplyAction("DS-C_ToggleShield_On");
+                _shieldRaised = true;
+                changed = true;
+            }
+            _enemyInRange = true;
+        }
+        if (_shieldRaised)
+            if (ManageShieldDefense(enemyPos)) changed = true;
+        if (changed) _shieldCooldown = 2.0;
     }
-    else if (!enemy && _enemyInRange)
+    else
     {
-        if (_shieldDownTimer != null) _shieldDownTimer.ApplyAction("TriggerNow");
+        _noEnemyTime += _dt;
+        if (_enemyInRange && _noEnemyTime >= 10.0)
+        {
+            bool changed = false;
+            if (_shieldRaised)
+            {
+                _shieldController.ApplyAction("DS-C_ToggleShield_Off");
+                _shieldRaised = false;
+                changed = true;
+            }
+            if (_shuntFocus != FaceSide.MatchHost)
+            {
+                ApplyShuntConfig(FaceSide.MatchHost);
+                _shuntFocus = FaceSide.MatchHost;
+                changed = true;
+            }
+            if (_fortify)
+            {
+                if (_shieldController.GetProperty("DS-C_ShieldFortify") != null)
+                    _shieldController.SetValueBool("DS-C_ShieldFortify", false);
+                _fortify = false;
+                changed = true;
+            }
+            _enemyInRange = false;
+            if (changed) _shieldCooldown = 2.0;
+        }
     }
-    _enemyInRange = enemy;
+}
+
+bool ManageShieldDefense(Vector3D enemyPos)
+{
+    if (_shieldController == null || _controller == null) return false;
+    Vector3D myPos = _controller.GetPosition();
+    Vector3D dir = Vector3D.Normalize(enemyPos - myPos);
+    MatrixD ori = _controller.WorldMatrix;
+    Vector3D local = Vector3D.TransformNormal(dir, MatrixD.Transpose(ori));
+    double ax = System.Math.Abs(local.X);
+    double ay = System.Math.Abs(local.Y);
+    double az = System.Math.Abs(local.Z);
+    FaceSide side;
+    if (az >= ax && az >= ay) side = (local.Z <= 0) ? FaceSide.Forward : FaceSide.Backward;
+    else if (ax >= ay)       side = (local.X <= 0) ? FaceSide.Left : FaceSide.Right;
+    else                     side = (local.Y <= 0) ? FaceSide.Down : FaceSide.Up;
+
+    bool changed = false;
+    if (side != _shuntFocus)
+    {
+        ApplyShuntConfig(side);
+        _shuntFocus = side;
+        changed = true;
+    }
+
+    double dist = Vector3D.Distance(enemyPos, myPos);
+    double speed = _controller.GetShipVelocities().LinearVelocity.Length();
+    bool needFortify = dist < 200.0 && speed < 12.0;
+    if (needFortify != _fortify)
+    {
+        if (_shieldController.GetProperty("DS-C_ShieldFortify") != null)
+            _shieldController.SetValueBool("DS-C_ShieldFortify", needFortify);
+        _fortify = needFortify;
+        changed = true;
+    }
+    return changed;
+}
+
+void ApplyShuntConfig(FaceSide focus)
+{
+    if (_shieldController == null) return;
+    ApplyShunt("Top",    focus != FaceSide.Up);
+    ApplyShunt("Bottom", focus != FaceSide.Down);
+    ApplyShunt("Left",   focus != FaceSide.Left);
+    ApplyShunt("Right",  focus != FaceSide.Right);
+    ApplyShunt("Front",  focus != FaceSide.Forward);
+    ApplyShunt("Back",   focus != FaceSide.Backward);
+}
+
+void ApplyShunt(string side, bool shunt)
+{
+    string action = "DS-C_" + side + "Shield_" + (shunt ? "ShuntOn" : "ShuntOff");
+    _shieldController.ApplyAction(action);
 }
 
 void MonitorAmmo()
@@ -1239,6 +1342,19 @@ void KamikazeStep()
         Vector3D dir = toTarget / dist;
         double closing = Vector3D.Dot(vel, dir);
         Vector3D lateral = vel - dir * closing;
+
+        double timeToImpact = (closing > 0.0) ? (dist / System.Math.Max(closing, 1e-3)) : double.MaxValue;
+        if (_shieldController != null && _shieldCooldown <= 0.0)
+        {
+            bool enableStruct = timeToImpact <= 3.0;
+            if (enableStruct != _structReinforce)
+            {
+                if (_shieldController.GetProperty("DS-M_ModulateReInforceProt") != null)
+                    _shieldController.SetValueBool("DS-M_ModulateReInforceProt", enableStruct);
+                _structReinforce = enableStruct;
+                _shieldCooldown = 2.0;
+            }
+        }
 
         double sumThrust =
             _axisX.MaxPos + _axisX.MaxNeg +

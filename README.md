@@ -9,7 +9,7 @@ Missiles can be assigned to firing groups using the `Group` value in a `[Missile
 Friendly grid IDs are shared over an IGC tag. By default this tag is `<FormationGroup>.FRIEND`, but it can be changed via the `FriendTag` setting in the `[IDs]` section of the custom data.
 Satellites wait for resupply when out of ammunition and will only broadcast a resupply request if they lack any energy weapons. Set `KamikazeOnEmpty=true` in the `[Weapons]` section to force kamikaze runs instead.
 
-Satellites can also run shield control timers. Add a `[Defense]` section with `ShieldTriggerDistance` to satellite custom data; when enemies come within this range the script triggers the `[Shields Up]` timer block, and triggers `[Shields Down]` once they leave.
+When the [Defense Shields](https://steamcommunity.com/sharedfiles/filedetails/?id=1365616918) mod is installed the script directly manages the shield controller. Add a `[Defense]` section with `ShieldTriggerDistance` to satellite custom data to set the detection range. Shields rise whenever enemies are detected within this distance and drop after ten seconds with no contacts. The script shunts inactive sides to reinforce the threatened face and toggles fortification when close threats are detected. Missiles and kamikaze drones enable structural reinforcement shortly before impact to survive until detonation.
 
 ### Commands
 
