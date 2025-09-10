@@ -23,6 +23,12 @@ Run these from the host Programmable Block terminal or via timer blocks.
 * `fire <group>` – broadcasts `CMD|FIRE|<group>|` causing missiles in the given group to strike the largest enemy grid within range.
 * `kamikazeempty` – broadcasts `CMD|KAMEMPTY|1|` so satellites ram the nearest hostile grid once out of ammo.
 * `resupply` – broadcasts `CMD|KAMEMPTY|0|` restoring the default behaviour of signaling for resupply.
+* `dock` – run on a satellite PB to request and dock with a free pad on the host.
+* `undock` – run on a docked satellite to back out and release its pad.
+
+### Docking
+
+The host acts as a traffic controller for connectors named `[PAD]`. Every pad is advertised on the `DOCK/REG` channel with its world position and orientation. Drones reserve a pad before approaching and align themselves to the reported axis and up vectors. Reservations prevent multiple drones from selecting the same pad. The host holds position while any pad is reserved or occupied.
 
 ### Failsafe
 
