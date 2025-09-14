@@ -798,7 +798,7 @@ void UpdateShields()
             var info = s.LastDetectedEntity;
             if (info.Type == MyDetectedEntityType.None) continue;
             if (info.Relationship != MyRelationsBetweenPlayerAndBlock.Enemies) continue;
-            if (info.Position.HasValue && Vector3D.DistanceSquared(info.Position.Value, pos) <= dist2)
+            if (Vector3D.DistanceSquared(info.Position, pos) <= dist2)
             {
                 enemy = true;
                 break;
