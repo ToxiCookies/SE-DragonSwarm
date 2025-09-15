@@ -23,6 +23,8 @@ Run these from the host Programmable Block terminal or via timer blocks.
 * `fire <group>` – broadcasts `CMD|FIRE|<group>|` causing missiles in the given group to strike the largest enemy grid within range.
 * `kamikazeempty` – broadcasts `CMD|KAMEMPTY|1|` so satellites ram the nearest hostile grid once out of ammo.
 * `resupply` – broadcasts `CMD|KAMEMPTY|0|` restoring the default behaviour of signaling for resupply.
+* `houseparty` – broadcasts `CMD|HOUSEPARTY|1|` enabling dynamic shielding; nearby satellites converge to shield the host.
+* `curfew` – broadcasts `CMD|HOUSEPARTY|0|` disabling dynamic shielding and restoring default formation.
 
 ### Failsafe
 
