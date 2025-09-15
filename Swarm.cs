@@ -81,6 +81,15 @@ readonly System.Collections.Generic.List<MyInventoryItem> _ammoTmp = new System.
 
 
 readonly System.Collections.Generic.HashSet<long> _friendGrids = new System.Collections.Generic.HashSet<long>();
+readonly System.Collections.Generic.Dictionary<int, Vector3D> _satPositions = new System.Collections.Generic.Dictionary<int, Vector3D>(64);
+readonly System.Collections.Generic.List<double> _distTmp = new System.Collections.Generic.List<double>(64);
+
+bool _houseParty = false;
+bool _inBarrier = false;
+Vector3D _barrierCenter;
+Vector3D _barrierNormal;
+double _barrierRadius = 50.0;
+double _barrierTimer = -1.0;
 
 ThrusterAxis _axisX = new ThrusterAxis(); // +Right / -Right
 ThrusterAxis _axisY = new ThrusterAxis(); // +Up / -Up
@@ -536,6 +545,16 @@ public void Main(string argument, UpdateType updateSource)
         {
             IGC.SendBroadcastMessage(_cmdTag, "CMD|REARM|", TransmissionDistance.TransmissionDistanceMax);
         }
+        else if (argument == "houseparty" && _role == Role.Host)
+        {
+            _houseParty = true;
+            IGC.SendBroadcastMessage(_cmdTag, "CMD|HOUSEPARTY|1|", TransmissionDistance.TransmissionDistanceMax);
+        }
+        else if (argument == "curfew" && _role == Role.Host)
+        {
+            _houseParty = false;
+            IGC.SendBroadcastMessage(_cmdTag, "CMD|HOUSEPARTY|0|", TransmissionDistance.TransmissionDistanceMax);
+        }
         else if (argument.StartsWith("fire", System.StringComparison.OrdinalIgnoreCase) && _role == Role.Host)
         {
             var parts = argument.Split(new[]{' '}, 2);
@@ -779,7 +798,7 @@ void UpdateShields()
             var info = s.LastDetectedEntity;
             if (info.Type == MyDetectedEntityType.None) continue;
             if (info.Relationship != MyRelationsBetweenPlayerAndBlock.Enemies) continue;
-            if (info.Position.HasValue && Vector3D.DistanceSquared(info.Position.Value, pos) <= dist2)
+            if (Vector3D.DistanceSquared(info.Position, pos) <= dist2)
             {
                 enemy = true;
                 break;
@@ -869,16 +888,58 @@ void HostStep()
             var s = msg.Data as string;
             if (s != null && msg.Tag == _statusTag)
             {
-                int sep = s.IndexOf('|');
-                if (sep > 0)
+                var parts = s.Split('|');
+                if (parts.Length >= 6)
                 {
+                    int p = 0;
                     long sid;
-                    if (long.TryParse(s.Substring(0, sep), System.Globalization.NumberStyles.Integer, CI, out sid))
-                        _friendGrids.Add(sid);
+                    int idx;
+                    if (long.TryParse(parts[p++], System.Globalization.NumberStyles.Integer, CI, out sid) &&
+                        int.TryParse(parts[p++], System.Globalization.NumberStyles.Integer, CI, out idx))
+                    {
+                        Vector3D pos;
+                        if (TryReadVec(parts, ref p, out pos))
+                        {
+                            _friendGrids.Add(sid);
+                            _satPositions[idx] = pos;
+                        }
+                    }
                 }
             }
         }
     }
+
+    if (_houseParty) HousePartyStep();
+}
+
+void HousePartyStep()
+{
+    Vector3D enemyPos;
+    if (!TryGetLargestEnemy(out enemyPos)) return;
+
+    Vector3D dir = Vector3D.Normalize(enemyPos - _hostPos);
+    double rad = (_hostRadius > 0.0) ? _hostRadius : 100.0;
+    Vector3D center = _hostPos + dir * rad;
+    double cutoff = ComputeBarrierCutoff(center);
+
+    _sb.Clear();
+    _sb.Append("CMD|BARRIER|");
+    AppendVector(center); AppendVector(dir);
+    _sb.Append(cutoff.ToString("R", CI)); _sb.Append('|');
+    _sb.Append(rad.ToString("R", CI)); _sb.Append('|');
+    IGC.SendBroadcastMessage(_cmdTag, _sb.ToString(), TransmissionDistance.TransmissionDistanceMax);
+}
+
+double ComputeBarrierCutoff(Vector3D center)
+{
+    _distTmp.Clear();
+    foreach (var kv in _satPositions)
+        _distTmp.Add((kv.Value - center).Length());
+    if (_distTmp.Count == 0) return double.MaxValue;
+    _distTmp.Sort();
+    int idx = _distTmp.Count / 3;
+    if (idx >= _distTmp.Count) idx = _distTmp.Count - 1;
+    return _distTmp[idx];
 }
 
 void SendTelemetry()
@@ -992,6 +1053,33 @@ void SatStep()
                     {
                         _weaponsEnabled = true;
                     }
+                    else if (parts[1] == "HOUSEPARTY")
+                    {
+                        bool enable = parts.Length > 2 && parts[2] == "1";
+                        _houseParty = enable;
+                        if (!enable) { _inBarrier = false; _barrierTimer = -1.0; }
+                    }
+                    else if (parts[1] == "BARRIER" && parts.Length >= 11)
+                    {
+                        int idx2 = 2;
+                        Vector3D center, normal;
+                        double cutoff, rad;
+                        if (TryReadVec(parts, ref idx2, out center) &&
+                            TryReadVec(parts, ref idx2, out normal) &&
+                            double.TryParse(parts[idx2++], System.Globalization.NumberStyles.Float, CI, out cutoff) &&
+                            double.TryParse(parts[idx2++], System.Globalization.NumberStyles.Float, CI, out rad))
+                        {
+                            _barrierCenter = center;
+                            _barrierNormal = Vector3D.Normalize(normal);
+                            _barrierRadius = rad;
+                            _barrierTimer = 0.0;
+                            if (_controller != null)
+                            {
+                                double d = Vector3D.Distance(_controller.GetPosition(), center);
+                                _inBarrier = (d <= cutoff);
+                            }
+                        }
+                    }
                     else if (parts[1] == "JUMP" && parts.Length >= 5)
                     {
                         int idx = 2;
@@ -1004,6 +1092,16 @@ void SatStep()
                     }
                 }
             }
+        }
+    }
+
+    if (_barrierTimer >= 0.0)
+    {
+        _barrierTimer += _dt;
+        if (_barrierTimer > 5.0)
+        {
+            _inBarrier = false;
+            _barrierTimer = -1.0;
         }
     }
 
@@ -1102,7 +1200,7 @@ void ControlStep()
     Vector3D vel   = _controller.GetShipVelocities().LinearVelocity;
 
     // Host-relative target and error
-    Vector3D target = ComputeTarget();
+    Vector3D target = (_houseParty && _inBarrier) ? ComputeBarrierTarget() : ComputeTarget();
     Vector3D error  = target - myPos;
 
     // Relative velocity (to host)
@@ -1282,6 +1380,18 @@ Vector3D ComputeTarget()
          + radius * ( _hostMatrix.Right   * unit.X
                     + _hostMatrix.Up      * unit.Y
                     + _hostMatrix.Forward * unit.Z );
+}
+
+Vector3D ComputeBarrierTarget()
+{
+    Vector3D n = _barrierNormal;
+    if (n.LengthSquared() < 1e-6) n = Vector3D.Normalize(_hostPos - _barrierCenter);
+    Vector3D u = Vector3D.Normalize(Vector3D.CalculatePerpendicularVector(n));
+    Vector3D v = Vector3D.Normalize(Vector3D.Cross(n, u));
+    double ang = _index * GOLDEN_ANGLE;
+    double c = System.Math.Cos(ang);
+    double s = System.Math.Sin(ang);
+    return _barrierCenter + (u * c + v * s) * _barrierRadius;
 }
 
 void ApplyThrust(ThrusterAxis axis, double accel)
