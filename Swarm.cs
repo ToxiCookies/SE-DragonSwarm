@@ -841,15 +841,13 @@ void UpdateShields()
     else
     {
         _noEnemyTime += _dt;
-        if (_enemyInRange && _noEnemyTime >= 10.0)
+        _enemyInRange = false;
+        if (_shieldRaised && _noEnemyTime >= 10.0)
         {
             bool changed = false;
-            if (_shieldRaised)
-            {
-                _shieldController.ApplyAction("DS-C_ToggleShield_Off");
-                _shieldRaised = false;
-                changed = true;
-            }
+            _shieldController.ApplyAction("DS-C_ToggleShield_Off");
+            _shieldRaised = false;
+            changed = true;
             if (_shuntFocus != FaceSide.MatchHost)
             {
                 ApplyShuntConfig(FaceSide.MatchHost);
@@ -863,7 +861,6 @@ void UpdateShields()
                 _fortify = false;
                 changed = true;
             }
-            _enemyInRange = false;
             if (changed) _shieldCooldown = 2.0;
         }
     }
