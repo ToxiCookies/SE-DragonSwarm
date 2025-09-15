@@ -38,6 +38,7 @@ double _hostBuffer = 22.0; // buffer distance beyond host radius
 double _hostRadius = 0.0;  // meters: host grid radius for push-out zone
 bool _useSensors = true;   // sensors must include "[Swarm Sensor]" in name
 bool _sensorFallback = false; // true when sensors missing
+bool _useLidar = false;    // rangefinder turrets must include "[Lidar Rangefinder]" in name
 
 // alignment options (new)
 bool _alignToHost = true;           // align orientation to host when holding
@@ -61,6 +62,8 @@ IMyShipController _controller;
 readonly System.Collections.Generic.List<IMyGyro> _gyros = new System.Collections.Generic.List<IMyGyro>(16);
 readonly System.Collections.Generic.List<IMyThrust> _thrusters = new System.Collections.Generic.List<IMyThrust>(64);
 readonly System.Collections.Generic.List<IMySensorBlock> _sensors = new System.Collections.Generic.List<IMySensorBlock>(8);
+readonly System.Collections.Generic.List<IMyTerminalBlock> _lidars = new System.Collections.Generic.List<IMyTerminalBlock>(4);
+int _lidarIndex = 0; // round-robin scan index
 readonly System.Collections.Generic.List<IMyWarhead> _warheads = new System.Collections.Generic.List<IMyWarhead>(8);
 readonly System.Collections.Generic.List<IMyJumpDrive> _jumpDrives = new System.Collections.Generic.List<IMyJumpDrive>(8);
 readonly System.Collections.Generic.List<IMyTerminalBlock> _weapons = new System.Collections.Generic.List<IMyTerminalBlock>(32);
@@ -227,6 +230,7 @@ void ParseIni()
     _kamikazeOnEmpty = _ini.Get("Weapons","KamikazeOnEmpty").ToBoolean(_kamikazeOnEmpty);
 
     _shieldRange = _ini.Get("Defense","ShieldTriggerDistance").ToDouble(_shieldRange);
+    _useLidar   = _ini.Get("Defense","UseLidar").ToBoolean(_useLidar);
 
     // alignment options
     _alignToHost = _ini.Get("Control","AlignToHost").ToBoolean(_alignToHost);
@@ -297,6 +301,8 @@ void DiscoverBlocks()
     _gyros.Clear();
     _thrusters.Clear();
     _sensors.Clear();
+    _lidars.Clear();
+    _lidarIndex = 0;
     _warheads.Clear();
     _weapons.Clear();
     _lowPowerWeapons.Clear();
@@ -384,6 +390,21 @@ void DiscoverBlocks()
         var s = b as IMySensorBlock;
         if (s != null && s.CustomName.IndexOf("[Swarm Sensor]", System.StringComparison.OrdinalIgnoreCase) >= 0)
             _sensors.Add(s);
+    }
+
+    if (_useLidar)
+    {
+        GridTerminalSystem.GetBlocksOfType<IMyTerminalBlock>(_lidars,
+            l => l.CubeGrid == Me.CubeGrid && l.CustomName.IndexOf("[Lidar Rangefinder]", System.StringComparison.OrdinalIgnoreCase) >= 0);
+
+        for (int i=0; i<_lidars.Count; i++)
+        {
+            var turret = _lidars[i] as IMyLargeTurretBase;
+            if (turret != null)
+                turret.EnableIdleRotation = true;
+            if (_lidars[i].GetProperty("WC_ReportTarget") != null)
+                _lidars[i].SetValueBool("WC_ReportTarget", true);
+        }
     }
 
     // fallback controller if named one not found
@@ -820,6 +841,18 @@ void UpdateShields()
         }
     }
 
+    if (!enemy && _useLidar && _lidars.Count > 0)
+    {
+        var l = _lidars[_lidarIndex];
+        _lidarIndex = (_lidarIndex + 1) % _lidars.Count;
+        Vector3D ipos;
+        if (LidarDetect(l, dist2, out ipos))
+        {
+            enemy = true;
+            enemyPos = ipos;
+        }
+    }
+
     if (enemy)
     {
         _noEnemyTime = 0.0;
@@ -864,6 +897,60 @@ void UpdateShields()
             if (changed) _shieldCooldown = 2.0;
         }
     }
+}
+
+bool LidarDetect(IMyTerminalBlock l, double dist2, out Vector3D pos)
+{
+    pos = Vector3D.Zero;
+    if (l == null || !l.IsWorking) return false;
+
+    var turret = l as IMyLargeTurretBase;
+    if (turret != null)
+    {
+        MyDetectedEntityInfo info = turret.GetTargetedEntity();
+        if (info.EntityId != 0)
+        {
+            Vector3D hit = info.Position;
+            if (info.HitPosition.HasValue) hit = info.HitPosition.Value;
+            if (Vector3D.DistanceSquared(hit, l.GetPosition()) <= dist2)
+            {
+                pos = hit;
+                return true;
+            }
+        }
+    }
+
+    double range = GetLidarRange(l);
+    if (range <= 0.0 || range * range > dist2) return false;
+
+    pos = l.WorldMatrix.Translation + l.WorldMatrix.Forward * range;
+    return true;
+}
+
+double GetLidarRange(IMyTerminalBlock l)
+{
+    double range = 0.0;
+    if (l.GetProperty("DetectedDistance") != null)
+        range = l.GetValue<double>("DetectedDistance");
+    else if (l.GetProperty("Range") != null)
+        range = l.GetValue<double>("Range");
+    else
+    {
+        string cd = l.CustomData;
+        int idx = cd.IndexOf("Range", System.StringComparison.OrdinalIgnoreCase);
+        if (idx < 0) idx = cd.IndexOf("Distance", System.StringComparison.OrdinalIgnoreCase);
+        if (idx >= 0)
+        {
+            idx = cd.IndexOf('=', idx);
+            if (idx >= 0)
+            {
+                int end = cd.IndexOf('\n', idx + 1);
+                string num = (end >= 0) ? cd.Substring(idx + 1, end - idx - 1) : cd.Substring(idx + 1);
+                double.TryParse(num.Trim(), System.Globalization.NumberStyles.Float, CI, out range);
+            }
+        }
+    }
+    return range;
 }
 
 bool ManageShieldDefense(Vector3D enemyPos)
@@ -1763,6 +1850,8 @@ void EchoStatus()
 
     if (_sensorFallback)
         _echo.Append("WARN: no [Swarm Sensor]\n");
+    if (_useLidar && _lidars.Count == 0)
+        _echo.Append("WARN: no [Lidar Rangefinder]\n");
 
     if (_debug && _controller != null)
     {

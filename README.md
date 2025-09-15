@@ -11,6 +11,8 @@ Satellites wait for resupply when out of ammunition and will only broadcast a re
 
 When the [Defense Shields](https://steamcommunity.com/sharedfiles/filedetails/?id=1365616918) mod is installed the script directly manages the shield controller. Add a `[Defense]` section with `ShieldTriggerDistance` to satellite custom data to set the detection range. Shields rise whenever enemies are detected within this distance and drop after ten seconds with no contacts. The script shunts inactive sides to reinforce the threatened face and toggles fortification when close threats are detected. Missiles and kamikaze drones enable structural reinforcement shortly before impact to survive until detonation.
 
+The script can also use rangefinders from the *Lidar Rangefinder* mod to trigger shields. Rename each rangefinder to include `[Lidar Rangefinder]` and set `UseLidar=true` in the `[Defense]` section. Each rangefinder is treated as a turret and reports any locked target; otherwise its forward distance reading is used. Idle rotation is enabled so a single unit can sweep the area. Contacts inside `ShieldTriggerDistance` raise the shields.
+
 ### Commands
 
 Run these from the host Programmable Block terminal or via timer blocks.
