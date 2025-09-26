@@ -9,7 +9,9 @@ with at most four programmable blocks:
 2. **SwarmSatellite.cs** – runs on satellites or missiles.  Each instance
    listens for host telemetry, keeps to its assigned Fibonacci-sphere slot and
    executes host commands.
-3. **(Optional) additional PBs** can extend behaviour (weapon logic, dedicated
+3. **SwarmTarget.cs** – shares enemy contact data across the swarm and offers
+   intercept prediction based on target velocity.
+4. **(Optional) additional PBs** can extend behaviour (weapon logic, dedicated
    missile profiles) but the core system functions with only Host + Satellites.
 
 Shared logic lives in `SwarmCore.cs` and `SwarmIGC.cs`.  These files contain the
