@@ -9,8 +9,10 @@ with at most four programmable blocks:
 2. **SwarmSatellite.cs** – runs on satellites or missiles.  Each instance
    listens for host telemetry, keeps to its assigned Fibonacci-sphere slot and
    executes host commands.
-3. **(Optional) additional PBs** can extend behaviour (weapon logic, dedicated
-   missile profiles) but the core system functions with only Host + Satellites.
+3. **SwarmWeapons.cs** – runs on weapon grids and toggles guns when receiving
+   `FIRE` or `CEASE` commands via IGC.
+4. **(Optional) additional PBs** can extend behaviour (dedicated missile
+   profiles) but the core system functions with only Host + Satellites.
 
 Shared logic lives in `SwarmCore.cs` and `SwarmIGC.cs`.  These files contain the
 formation math, a minimal PID controller and the custom API used for
@@ -29,7 +31,7 @@ startup.  Typical runtime is well below the 0.5 ms per tick limit.
 * Satellites automatically announce themselves; the host assigns orbit slots and
   continually broadcasts its position.
 * Manual commands typed into the host PB argument field are rebroadcast to all
-  satellites (e.g. `KAMIKAZE` or `FIRE`).
+  satellites and weapon controllers (e.g. `FIRE` or `CEASE`).
 
 Custom data examples from the previous version remain compatible for basic
 operation, though many advanced options have been trimmed for simplicity.
