@@ -31,5 +31,20 @@ startup.  Typical runtime is well below the 0.5 ms per tick limit.
 * Manual commands typed into the host PB argument field are rebroadcast to all
   satellites (e.g. `KAMIKAZE` or `FIRE`).
 
+### Host Commands
+
+The host recognizes a handful of swarm coordination commands:
+
+* `HOUSEPARTY` – closest third of the swarm converges defensively (use `CURFEW` to cancel)
+* `CURFEW` – restore normal shell formation
+* `DOCK` / `UNDOCK` – automatically dock or deploy nearby swarm members
+* `FIRE <group><mode>` – launch missile group (`0` fires all) using mode `A`, `B` or `C`
+* `CEASEFIRE` / `ARM` – disable or enable all weapons
+* `INFO <id>` – show detailed telemetry for a member on the fifth display
+
+The host PB uses its first four text surfaces for shell occupancy, radar contacts,
+missile and satellite telemetry.  The fifth surface acts as an interaction panel
+showing details for a selected member.
+
 Custom data examples from the previous version remain compatible for basic
 operation, though many advanced options have been trimmed for simplicity.
