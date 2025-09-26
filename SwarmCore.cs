@@ -34,4 +34,38 @@ static class SwarmCore
             return _p * error + _d * derivative;
         }
     }
+
+    // Predict intercept point for a moving target given projectile speed
+    public static VRageMath.Vector3D PredictIntercept(
+        VRageMath.Vector3D shooterPos,
+        VRageMath.Vector3D shooterVel,
+        VRageMath.Vector3D targetPos,
+        VRageMath.Vector3D targetVel,
+        double projectileSpeed)
+    {
+        VRageMath.Vector3D relPos = targetPos - shooterPos;
+        VRageMath.Vector3D relVel = targetVel - shooterVel;
+
+        double a = relVel.LengthSquared() - projectileSpeed * projectileSpeed;
+        double b = 2.0 * VRageMath.Vector3D.Dot(relVel, relPos);
+        double c = relPos.LengthSquared();
+        double t;
+
+        if (System.Math.Abs(a) < 1e-6)
+            t = -c / b;
+        else
+        {
+            double det = b * b - 4.0 * a * c;
+            if (det < 0)
+                return targetPos;
+            double sqrt = System.Math.Sqrt(det);
+            double t1 = (-b + sqrt) / (2.0 * a);
+            double t2 = (-b - sqrt) / (2.0 * a);
+            t = System.Math.Max(t1, t2);
+        }
+
+        if (t < 0)
+            t = 0;
+        return targetPos + relVel * t;
+    }
 }
